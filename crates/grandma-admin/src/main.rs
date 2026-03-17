@@ -221,6 +221,27 @@ fn handle_request(
             }
         }
 
+        (Method::Get, path) if path.starts_with("/api/art-exists/") => {
+            let game_id = &path["/api/art-exists/".len()..];
+            let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+
+            // Validate game_id: non-empty, max 64 chars, lowercase alphanumeric only
+            let valid = !game_id.is_empty()
+                && game_id.len() <= 64
+                && game_id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+
+            if !valid {
+                request.respond(
+                    Response::from_string(r#"{"exists":false}"#).with_header(header)
+                ).ok();
+                return;
+            }
+
+            let exists = paths.boxart_dir().join(format!("{}.png", game_id)).exists();
+            let json = format!(r#"{{"exists":{}}}"#, exists);
+            request.respond(Response::from_string(json).with_header(header)).ok();
+        }
+
         _ => {
             request.respond(Response::from_string("404").with_status_code(404)).ok();
         }
