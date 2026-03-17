@@ -104,6 +104,7 @@ function findArtMatch(gameName) {
 async function fetchArtForGame(gameId, gameName) {
   const match = findArtMatch(gameName);
   if (!match) return;
+  updateArtStatus(gameId, 'fetching');
   try {
     const url = LIBRETRO_BOXART_URL + encodeURIComponent(match);
     const res = await fetch(url);
@@ -147,33 +148,38 @@ async function fetchMissingArt() {
   btn.disabled = true;
   const artStatus = document.getElementById('artStatus');
 
-  const toFetch = [];
-  for (const game of games) {
-    const res = await fetch('/api/art-exists/' + game.id);
-    const data = await res.json();
-    if (!data.exists) {
-      toFetch.push(game);
+  try {
+    const toFetch = [];
+    for (const game of games) {
+      const res = await fetch('/api/art-exists/' + game.id);
+      const data = await res.json();
+      if (!data.exists) {
+        toFetch.push(game);
+      }
     }
-  }
 
-  if (toFetch.length === 0) {
+    if (toFetch.length === 0) {
+      artStatus.className = 'status ok';
+      artStatus.textContent = 'All games already have art!';
+      return;
+    }
+
+    let fetched = 0;
+    for (const game of toFetch) {
+      fetched++;
+      artStatus.className = 'status ok';
+      artStatus.textContent = `Fetching art ${fetched}/${toFetch.length}: ${game.name}...`;
+      await fetchArtForGame(game.id, game.name);
+    }
+
     artStatus.className = 'status ok';
-    artStatus.textContent = 'All games already have art!';
+    artStatus.textContent = `Done! Attempted art fetch for ${toFetch.length} game(s).`;
+  } catch (e) {
+    artStatus.className = 'status err';
+    artStatus.textContent = 'Error fetching art: ' + e.message;
+  } finally {
     btn.disabled = false;
-    return;
   }
-
-  let fetched = 0;
-  for (const game of toFetch) {
-    fetched++;
-    artStatus.className = 'status ok';
-    artStatus.textContent = `Fetching art ${fetched}/${toFetch.length}: ${game.name}...`;
-    await fetchArtForGame(game.id, game.name);
-  }
-
-  artStatus.className = 'status ok';
-  artStatus.textContent = `Done! Attempted art fetch for ${toFetch.length} game(s).`;
-  btn.disabled = false;
 }
 
 function renderLineup() {
