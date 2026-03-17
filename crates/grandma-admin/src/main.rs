@@ -120,6 +120,115 @@ fn handle_request(
             }
         }
 
+        (Method::Post, path) if path.starts_with("/api/art/") => {
+            let game_id = &path["/api/art/".len()..];
+
+            // Validate game_id: non-empty, lowercase alphanumeric only
+            if game_id.is_empty() || !game_id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                request.respond(
+                    Response::from_string(r#"{"error":"Invalid game_id: must be non-empty lowercase alphanumeric"}"#)
+                        .with_status_code(400)
+                        .with_header(header)
+                ).ok();
+                return;
+            }
+
+            // Reject empty body
+            let content_length = request.body_length().unwrap_or(0);
+            if content_length == 0 {
+                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                request.respond(
+                    Response::from_string(r#"{"error":"Empty body"}"#)
+                        .with_status_code(400)
+                        .with_header(header)
+                ).ok();
+                return;
+            }
+
+            // Reject body over 2MB
+            const MAX_ART_SIZE: u64 = 2 * 1024 * 1024;
+            if content_length > MAX_ART_SIZE as usize {
+                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                request.respond(
+                    Response::from_string(r#"{"error":"Request body too large"}"#)
+                        .with_status_code(413)
+                        .with_header(header)
+                ).ok();
+                return;
+            }
+
+            // Read body bytes
+            let mut body = Vec::new();
+            if let Err(e) = request.as_reader().take(MAX_ART_SIZE).read_to_end(&mut body) {
+                error!("Failed to read art upload body: {}", e);
+                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                request.respond(
+                    Response::from_string(r#"{"error":"Failed to read request body"}"#)
+                        .with_status_code(500)
+                        .with_header(header)
+                ).ok();
+                return;
+            }
+
+            // Reject empty body (after read)
+            if body.is_empty() {
+                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                request.respond(
+                    Response::from_string(r#"{"error":"Empty body"}"#)
+                        .with_status_code(400)
+                        .with_header(header)
+                ).ok();
+                return;
+            }
+
+            // Validate PNG magic bytes
+            const PNG_MAGIC: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+            if body.len() < 8 || body[..8] != PNG_MAGIC {
+                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                request.respond(
+                    Response::from_string(r#"{"error":"Invalid PNG file"}"#)
+                        .with_status_code(400)
+                        .with_header(header)
+                ).ok();
+                return;
+            }
+
+            // Create boxart directory if needed
+            let boxart_dir = paths.boxart_dir();
+            if let Err(e) = std::fs::create_dir_all(&boxart_dir) {
+                error!("Failed to create boxart directory: {}", e);
+                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                request.respond(
+                    Response::from_string(r#"{"error":"Failed to create boxart directory"}"#)
+                        .with_status_code(500)
+                        .with_header(header)
+                ).ok();
+                return;
+            }
+
+            // Save using atomic write
+            let art_path = boxart_dir.join(format!("{}.png", game_id));
+            match grandma_common::atomic::atomic_write(&art_path, &body) {
+                Ok(_) => {
+                    info!("Saved art for game '{}'", game_id);
+                    let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                    request.respond(
+                        Response::from_string(r#"{"ok":true}"#).with_header(header)
+                    ).ok();
+                }
+                Err(e) => {
+                    error!("Failed to save art for '{}': {}", game_id, e);
+                    let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                    request.respond(
+                        Response::from_string(format!(r#"{{"error":"{}"}}"#, e))
+                            .with_status_code(500)
+                            .with_header(header)
+                    ).ok();
+                }
+            }
+        }
+
         _ => {
             request.respond(Response::from_string("404").with_status_code(404)).ok();
         }
