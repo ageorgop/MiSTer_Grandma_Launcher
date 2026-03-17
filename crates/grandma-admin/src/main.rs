@@ -254,7 +254,7 @@ fn handle_request(
             let remote_url = format!("https://thumbnails.libretro.com/{}", remote_path);
             // Shell out to curl for HTTPS, avoiding a TLS library dependency.
             match std::process::Command::new("curl")
-                .args(["-sSfL", "--max-time", "30", &remote_url])
+                .args(["-sSfLk", "--max-time", "30", &remote_url])
                 .output()
             {
                 Ok(output) if output.status.success() => {
