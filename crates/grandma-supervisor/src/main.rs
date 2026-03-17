@@ -5,6 +5,7 @@ use log::{info, error, warn};
 use simplelog::*;
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
+use std::path::Path;
 
 const MAX_FAST_FAILURES: u32 = 3;
 const FAST_FAILURE_THRESHOLD: Duration = Duration::from_secs(2);
@@ -24,6 +25,33 @@ fn init_logging(paths: &GrandmaPaths) {
         TermLogger::new(LevelFilter::Info, Config::default(), TerminalMode::Stderr, ColorChoice::Auto),
         WriteLogger::new(LevelFilter::Info, Config::default(), log_file),
     ]).ok();
+}
+
+/// Check if a process with the given PID is a running grandma-supervisor.
+fn is_supervisor_running(pid: u32) -> bool {
+    let comm_path = format!("/proc/{}/comm", pid);
+    match std::fs::read_to_string(&comm_path) {
+        Ok(name) => name.trim().starts_with("grandma-supervi"),
+        Err(_) => false,
+    }
+}
+
+/// Acquire the PID file, returning false if another supervisor is already running.
+fn acquire_pid_file(pid_path: &Path) -> bool {
+    if let Ok(contents) = std::fs::read_to_string(pid_path) {
+        if let Ok(pid) = contents.trim().parse::<u32>() {
+            if is_supervisor_running(pid) {
+                return false;
+            }
+        }
+    }
+
+    let my_pid = std::process::id().to_string();
+    std::fs::write(pid_path, my_pid.as_bytes()).is_ok()
+}
+
+fn remove_pid_file(pid_path: &Path) {
+    let _ = std::fs::remove_file(pid_path);
 }
 
 fn bin_path(paths: &GrandmaPaths, name: &str) -> std::path::PathBuf {
@@ -57,9 +85,20 @@ fn main() -> ExitCode {
     init_logging(&paths);
     info!("grandma-supervisor starting (base: {})", base);
 
+    // Prevent duplicate supervisor instances. On MiSTer, user-startup.sh can
+    // run twice during boot, which would start two supervisors. Two launchers
+    // fighting over the framebuffer causes the F9 toggle to cancel itself out,
+    // leaving the FPGA display overlay disabled.
+    let pid_path = paths.pid_file();
+    if !acquire_pid_file(&pid_path) {
+        info!("Another supervisor is already running, exiting");
+        return ExitCode::SUCCESS;
+    }
+
     // Kill switch check
     if GrandmaPaths::kill_switch().exists() {
         info!("Kill switch file exists, exiting");
+        remove_pid_file(&pid_path);
         return ExitCode::SUCCESS;
     }
 
@@ -68,10 +107,12 @@ fn main() -> ExitCode {
         Some(0) => info!("Splash completed, proceeding to launcher"),
         Some(_) => {
             info!("Escape requested during splash, exiting to MiSTer menu");
+            remove_pid_file(&pid_path);
             return ExitCode::SUCCESS;
         }
         None => {
             error!("Splash failed to start, exiting to MiSTer menu");
+            remove_pid_file(&pid_path);
             return ExitCode::FAILURE;
         }
     }
@@ -98,6 +139,7 @@ fn main() -> ExitCode {
 
             if fast_failures >= MAX_FAST_FAILURES {
                 error!("Too many fast failures, falling back to MiSTer menu");
+                remove_pid_file(&pid_path);
                 return ExitCode::FAILURE;
             }
 
