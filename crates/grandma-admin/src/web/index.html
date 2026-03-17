@@ -25,12 +25,16 @@
   .status.ok { display: block; background: #2a4a2a; color: #8f8; }
   .status.err { display: block; background: #4a2a2a; color: #f88; }
   .search { width: 100%; padding: 8px 12px; margin-bottom: 10px; border: 1px solid #555; border-radius: 6px; background: #222; color: #eee; font-size: 1em; }
-  .art-status { font-size: 1.2em; min-width: 24px; text-align: center; }
+  .art-thumb { width: 50px; height: 50px; object-fit: contain; border-radius: 4px; cursor: pointer; background: #3a3a5e; flex-shrink: 0; }
+  .art-thumb:hover { opacity: 0.7; }
+  .art-thumb-placeholder { width: 50px; height: 50px; border-radius: 4px; cursor: pointer; background: #3a3a5e; display: flex; align-items: center; justify-content: center; font-size: 0.55em; color: #666; flex-shrink: 0; }
+  .art-thumb-placeholder:hover { background: #4a4a6e; }
   .btn-fetch-art { background: #a86; color: white; font-size: 1em; padding: 8px 18px; margin-top: 10px; margin-left: 10px; }
 </style>
 </head>
 <body>
 <h1>Grandma Launcher</h1>
+<input type="file" id="artPicker" accept="image/png" style="display:none">
 
 <h2>Current Game Lineup</h2>
 <ul class="game-list" id="lineup"></ul>
@@ -134,16 +138,56 @@ async function fetchArtForGame(gameId, gameName) {
 }
 
 function updateArtStatus(gameId, status) {
-  const el = document.getElementById('art-' + gameId);
-  if (!el) return;
   if (status === 'found') {
-    el.textContent = '🖼';
-    el.title = 'Box art downloaded';
-  } else if (status === 'fetching') {
-    el.textContent = '⌛';
-    el.title = 'Fetching box art...';
+    loadThumb(gameId);
   }
 }
+
+function loadThumb(gameId) {
+  const el = document.getElementById('art-' + gameId);
+  if (!el) return;
+  const img = new Image();
+  img.onload = function() {
+    const newImg = document.createElement('img');
+    newImg.className = 'art-thumb';
+    newImg.id = 'art-' + gameId;
+    newImg.src = img.src;
+    newImg.title = 'Click to change art';
+    newImg.onclick = function() { pickArt(gameId); };
+    el.replaceWith(newImg);
+  };
+  img.src = '/api/art/' + gameId + '?t=' + Date.now();
+}
+
+let pickArtTargetId = null;
+
+function pickArt(gameId) {
+  pickArtTargetId = gameId;
+  document.getElementById('artPicker').click();
+}
+
+document.getElementById('artPicker').addEventListener('change', async function() {
+  const file = this.files[0];
+  this.value = '';
+  if (!file || !pickArtTargetId) return;
+  const gameId = pickArtTargetId;
+  pickArtTargetId = null;
+  try {
+    const res = await fetch('/api/art/' + gameId, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file
+    });
+    const data = await res.json();
+    if (data.ok) {
+      loadThumb(gameId);
+    } else {
+      alert('Upload failed: ' + (data.error || 'Unknown error'));
+    }
+  } catch (e) {
+    alert('Upload failed: ' + e.message);
+  }
+});
 
 async function fetchMissingArt() {
   if (!artListingCache) {
@@ -197,12 +241,13 @@ function renderLineup() {
     <li>
       <button class="btn-up" onclick="moveUp(${i})">&uarr;</button>
       <button class="btn-down" onclick="moveDown(${i})">&darr;</button>
+      <div class="art-thumb-placeholder" id="art-${esc(g.id)}" onclick="pickArt('${esc(g.id)}')" title="Click to upload art">No Art</div>
       <span class="name">${esc(g.name)}</span>
       <span class="system">${esc(g.system)}</span>
-      <span id="art-${esc(g.id)}" class="art-status" title=""></span>
       <button class="btn-remove" onclick="removeGame(${i})">Remove</button>
     </li>
   `).join('');
+  games.forEach(g => loadThumb(g.id));
 }
 
 function esc(s) {
