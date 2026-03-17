@@ -242,6 +242,32 @@ fn handle_request(
             request.respond(Response::from_string(json).with_header(header)).ok();
         }
 
+        (Method::Get, path) if path.starts_with("/api/art/") => {
+            let game_id = &path["/api/art/".len()..];
+            let valid = !game_id.is_empty()
+                && game_id.len() <= 64
+                && game_id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+
+            if !valid {
+                request.respond(Response::from_string("Not found").with_status_code(404)).ok();
+                return;
+            }
+
+            let art_path = paths.boxart_dir().join(format!("{}.png", game_id));
+            match std::fs::read(&art_path) {
+                Ok(data) => {
+                    let ct = Header::from_bytes("Content-Type", "image/png").unwrap();
+                    let cc = Header::from_bytes("Cache-Control", "max-age=1").unwrap();
+                    request.respond(
+                        Response::from_data(data).with_header(ct).with_header(cc)
+                    ).ok();
+                }
+                Err(_) => {
+                    request.respond(Response::from_string("Not found").with_status_code(404)).ok();
+                }
+            }
+        }
+
         (Method::Get, path) if path.starts_with("/api/art-proxy/") => {
             let remote_path = &path["/api/art-proxy/".len()..];
             // Only allow proxying to the known thumbnails path, reject traversal
