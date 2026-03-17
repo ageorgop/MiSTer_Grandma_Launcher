@@ -143,20 +143,24 @@ function updateArtStatus(gameId, status) {
   }
 }
 
-function loadThumb(gameId) {
+async function loadThumb(gameId) {
   const el = document.getElementById('art-' + gameId);
   if (!el) return;
-  const img = new Image();
-  img.onload = function() {
+  try {
+    const res = await fetch('/api/art/' + gameId + '?t=' + Date.now());
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
     const newImg = document.createElement('img');
     newImg.className = 'art-thumb';
     newImg.id = 'art-' + gameId;
-    newImg.src = img.src;
+    newImg.src = url;
     newImg.title = 'Click to change art';
     newImg.onclick = function() { pickArt(gameId); };
     el.replaceWith(newImg);
-  };
-  img.src = '/api/art/' + gameId + '?t=' + Date.now();
+  } catch (e) {
+    // Keep placeholder
+  }
 }
 
 let pickArtTargetId = null;
