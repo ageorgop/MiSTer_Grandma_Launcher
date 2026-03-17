@@ -243,7 +243,8 @@ fn handle_request(
         }
 
         (Method::Get, path) if path.starts_with("/api/art/") => {
-            let game_id = &path["/api/art/".len()..];
+            let game_id_raw = &path["/api/art/".len()..];
+            let game_id = game_id_raw.split('?').next().unwrap_or("");
             let valid = !game_id.is_empty()
                 && game_id.len() <= 64
                 && game_id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
