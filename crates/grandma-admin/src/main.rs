@@ -124,7 +124,7 @@ fn handle_request(
             let game_id = &path["/api/art/".len()..];
 
             // Validate game_id: non-empty, lowercase alphanumeric only
-            if game_id.is_empty() || !game_id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+            if game_id.is_empty() || game_id.len() > 64 || !game_id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
                 let header = Header::from_bytes("Content-Type", "application/json").unwrap();
                 request.respond(
                     Response::from_string(r#"{"error":"Invalid game_id: must be non-empty lowercase alphanumeric"}"#)
