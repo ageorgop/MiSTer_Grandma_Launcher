@@ -1,10 +1,10 @@
-# Grandma Launcher
+# MiSTer Grandma Launcher
 
 A curated retro game launcher for MiSTer FPGA — turn your MiSTer into a simple game kiosk.
 
 <!-- TODO: add screenshot of game grid -->
 
-**Status:** Early POC — tested with arcade (MAME) games only.
+**Status:** Early POC — tested with arcade (MAME) games only. Developed on a QMTECH MiSTer FPGA Cyclone V SoC.
 
 ## What It Does
 
@@ -172,25 +172,24 @@ ssh mister
 vi /media/fat/grandma_launcher/games.json
 ```
 
-Replace the empty games array with real entries. These three arcade games exist on stock MiSTer if you've run Update All (your exact filenames may differ — check `ls /media/fat/_Arcade/` on your device):
+Copy the included example file as a starting point, or edit `/media/fat/grandma_launcher/games.json` directly. It has Galaga, Ms. Pac-Man, and Donkey Kong — these `.mra` files exist on stock MiSTer if you've run Update All (your exact filenames may differ — check `ls /media/fat/_Arcade/` on your device):
+
+```bash
+scp games.json.example mister:/media/fat/grandma_launcher/games.json
+```
+
+See [`games.json.example`](games.json.example), which looks like this:
 
 ```json
 {
   "schema": 1,
   "games": [
     {
-      "id": "dkong",
-      "name": "Donkey Kong",
-      "system": "arcade",
-      "launch": "/media/fat/_Arcade/Donkey Kong (US, Set 1).mra",
-      "art": "assets/boxart/dkong.png"
-    },
-    {
-      "id": "galaga",
-      "name": "Galaga",
+      "id": "galagamidwayset1",
+      "name": "Galaga (Midway, Set 1)",
       "system": "arcade",
       "launch": "/media/fat/_Arcade/Galaga (Midway, Set 1).mra",
-      "art": "assets/boxart/galaga.png"
+      "art": "assets/boxart/galagamidwayset1.png"
     },
     {
       "id": "mspacman",
@@ -198,6 +197,13 @@ Replace the empty games array with real entries. These three arcade games exist 
       "system": "arcade",
       "launch": "/media/fat/_Arcade/Ms. Pac-Man.mra",
       "art": "assets/boxart/mspacman.png"
+    },
+    {
+      "id": "donkeykongusset1",
+      "name": "Donkey Kong (US, Set 1)",
+      "system": "arcade",
+      "launch": "/media/fat/_Arcade/Donkey Kong (US, Set 1).mra",
+      "art": "assets/boxart/donkeykongusset1.png"
     }
   ]
 }
@@ -328,6 +334,7 @@ Tests run on the host (not ARM). 25 tests cover config parsing, atomic writes, i
 - [ ] GitHub Actions CI for cross-compilation (build on every push)
 - [ ] GitHub Release workflow — attach prebuilt tarball so users can download and install without Rust/cross
 - [ ] Screenshot of the game grid for the README
+- [ ] Responsive UI layout — scale tiles, margins, and fonts based on detected resolution and orientation (CRT, 720p, vertical/tate monitors, non-16:9 LCDs)
 
 ## Known Limitations
 
@@ -336,6 +343,7 @@ Tests run on the host (not ARM). 25 tests cover config parsing, atomic writes, i
 - **Splash screen escape is stdin-only.** It reads from stdin, not evdev — escape detection requires the process to have a TTY.
 - **No EVIOCGRAB.** If MiSTer grabs exclusive access to your controller, the launcher won't see its input.
 - **No controller hotplug.** Input devices are enumerated once at launcher startup.
+- **1080p HDMI only.** The UI layout (tile sizes, margins, fonts) is hardcoded for 1920x1080. The framebuffer adapts to other resolutions, but the grid won't fit on CRT (240p), 720p, vertical/tate monitors, or non-16:9 LCDs.
 - **Admin web server is minimal.** No art scraping or MGL generation yet.
 
 ## License
