@@ -122,6 +122,20 @@ Every launcher start rebuilds all state from scratch: reopen the framebuffer mma
 
 ## Quick Start
 
+### Scripts Overview
+
+There are two kinds of scripts, kept in separate places to avoid confusion:
+
+| Script | Runs on | Location | Purpose |
+|--------|---------|----------|---------|
+| `deploy.sh` | Your PC | repo root | Build, package, ship to MiSTer, and run the installer remotely |
+| `install.sh` | MiSTer | `mister_scripts/` | Set up directories, copy binaries, hook into boot, configure MiSTer.ini |
+| `uninstall.sh` | MiSTer | `mister_scripts/` | Remove launcher, unhook from boot, optionally back up configs |
+| `admin-start.sh` | MiSTer | `mister_scripts/` | Start the admin web server in the background |
+| `admin-stop.sh` | MiSTer | `mister_scripts/` | Stop the admin web server |
+
+`deploy.sh` calls `install.sh` — deploy is the developer workflow (build + ship), install is the on-device setup. If you download a prebuilt tarball (planned for v0.2), you'd only run `install.sh` on the MiSTer.
+
 > **Note:** Only tested with arcade (MAME) games so far. The examples below use `.mra` files from the stock `_Arcade/` folder.
 
 ### Prerequisites
@@ -225,6 +239,43 @@ Place PNG files in `/media/fat/grandma_launcher/assets/boxart/` on the MiSTer. T
 
 Any resolution works — images are resized at startup to fit the grid tiles.
 
+## Admin Web Server
+
+The admin server lets you manage the game list from a browser instead of editing JSON by hand. It scans your MiSTer's `_Arcade/` folder for available `.mra` files and lets you add/remove/reorder games.
+
+> **Security warning:** The admin server has **no authentication** — anyone on your network can access it. Only run it when you need it, and stop it when you're done. Password protection is planned for a future version.
+
+### Starting the admin server
+
+SSH into your MiSTer and run:
+
+```bash
+/media/fat/grandma_launcher/admin-start.sh
+```
+
+This prints the URL to open in your browser (e.g. `http://10.73.7.226:8080`). The server runs in the background.
+
+### Stopping the admin server
+
+```bash
+/media/fat/grandma_launcher/admin-stop.sh
+```
+
+### What it can do
+
+- Browse available `.mra` files on the MiSTer
+- Add games to your curated list
+- Remove games
+- Save changes (atomic write with backup)
+
+### What it can't do yet
+
+- Upload or scrape box art
+- Generate MGL files for console games
+- Any kind of authentication
+
+The default port is 8080, configurable via `admin_port` in `settings.json`.
+
 ## Controls
 
 | Input | Action |
@@ -278,6 +329,8 @@ Tracks recently played games. Don't edit this — it's auto-managed by the launc
 │   ├── font.ttf
 │   └── boxart/            ← your PNG files go here
 ├── mgls/                  ← for future MGL support
+├── admin-start.sh         ← start the admin web server
+├── admin-stop.sh          ← stop the admin web server
 ├── games.json             ← you edit this
 ├── settings.json          ← auto-created, optionally customize
 ├── state.json             ← auto-managed, don't touch
@@ -335,6 +388,7 @@ Tests run on the host (not ARM). 25 tests cover config parsing, atomic writes, i
 - [ ] GitHub Release workflow — attach prebuilt tarball so users can download and install without Rust/cross
 - [ ] Screenshot of the game grid for the README
 - [ ] Responsive UI layout — scale tiles, margins, and fonts based on detected resolution and orientation (CRT, 720p, vertical/tate monitors, non-16:9 LCDs)
+- [ ] Admin server authentication (password protection)
 
 ## Known Limitations
 
@@ -344,6 +398,7 @@ Tests run on the host (not ARM). 25 tests cover config parsing, atomic writes, i
 - **No EVIOCGRAB.** If MiSTer grabs exclusive access to your controller, the launcher won't see its input.
 - **No controller hotplug.** Input devices are enumerated once at launcher startup.
 - **1080p HDMI only.** The UI layout (tile sizes, margins, fonts) is hardcoded for 1920x1080. The framebuffer adapts to other resolutions, but the grid won't fit on CRT (240p), 720p, vertical/tate monitors, or non-16:9 LCDs.
+- **Admin web server has no authentication.** Anyone on your local network can access it. Only run it when actively managing games.
 - **Admin web server is minimal.** No art scraping or MGL generation yet.
 
 ## License

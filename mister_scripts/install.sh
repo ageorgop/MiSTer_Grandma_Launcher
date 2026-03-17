@@ -28,6 +28,15 @@ for bin in grandma-supervisor grandma-splash grandma-launcher grandma-admin; do
     fi
 done
 
+# Copy admin helper scripts
+for script in admin-start.sh admin-stop.sh; do
+    if [ -f "$SCRIPT_DIR/$script" ]; then
+        cp "$SCRIPT_DIR/$script" "$INSTALL_DIR/$script"
+        chmod +x "$INSTALL_DIR/$script"
+        echo "  Installed $script"
+    fi
+done
+
 # Copy assets
 if [ -f "$SCRIPT_DIR/DejaVuSans.ttf" ]; then
     cp "$SCRIPT_DIR/DejaVuSans.ttf" "$INSTALL_DIR/assets/font.ttf"

@@ -30,7 +30,7 @@ for bin in grandma-supervisor grandma-splash grandma-launcher grandma-admin; do
     cp "${RELEASE_DIR}/${bin}" "${PACK_DIR}/"
 done
 
-for script in install.sh uninstall.sh; do
+for script in mister_scripts/install.sh mister_scripts/uninstall.sh mister_scripts/admin-start.sh mister_scripts/admin-stop.sh; do
     [ -f "${SCRIPT_DIR}/${script}" ] && cp "${SCRIPT_DIR}/${script}" "${PACK_DIR}/"
 done
 
@@ -54,3 +54,4 @@ echo ""
 echo "=== Deploy complete ==="
 echo "Launcher is running. Will also start automatically on boot."
 echo "To uninstall: ssh ${HOST} '/media/fat/grandma_launcher/uninstall.sh'"
+echo "To manage games: ssh ${HOST} '/media/fat/grandma_launcher/admin-start.sh'"
