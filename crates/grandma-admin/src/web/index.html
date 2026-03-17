@@ -25,6 +25,8 @@
   .status.ok { display: block; background: #2a4a2a; color: #8f8; }
   .status.err { display: block; background: #4a2a2a; color: #f88; }
   .search { width: 100%; padding: 8px 12px; margin-bottom: 10px; border: 1px solid #555; border-radius: 6px; background: #222; color: #eee; font-size: 1em; }
+  .art-status { font-size: 1.2em; min-width: 24px; text-align: center; }
+  .btn-fetch-art { background: #a86; color: white; font-size: 1em; padding: 8px 18px; margin-top: 10px; margin-left: 10px; }
 </style>
 </head>
 <body>
@@ -33,7 +35,9 @@
 <h2>Current Game Lineup</h2>
 <ul class="game-list" id="lineup"></ul>
 <button class="btn-save" onclick="saveGames()">Save &amp; Apply</button>
+<button class="btn-fetch-art" id="fetchArtBtn" onclick="fetchMissingArt()">Fetch Missing Art</button>
 <div id="status" class="status"></div>
+<div id="artStatus" class="status"></div>
 
 <h2>Add Games from Arcade Library</h2>
 <input type="text" class="search" id="search" placeholder="Search arcade games..." oninput="filterAvailable()">
@@ -44,6 +48,9 @@
 <script>
 let games = [];
 let available = [];
+let artListingCache = null;
+
+const LIBRETRO_BOXART_URL = 'https://thumbnails.libretro.com/MAME/Named_Boxarts/';
 
 async function load() {
   const [gamesRes, mraRes] = await Promise.all([
@@ -55,6 +62,118 @@ async function load() {
   available = await mraRes.json();
   renderLineup();
   renderAvailable();
+  fetchArtListing();
+}
+
+async function fetchArtListing() {
+  try {
+    const res = await fetch(LIBRETRO_BOXART_URL);
+    if (!res.ok) return;
+    const html = await res.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const links = doc.querySelectorAll('a[href$=".png"]');
+    artListingCache = [];
+    for (const a of links) {
+      const filename = decodeURIComponent(a.getAttribute('href'));
+      const prefix = extractPrefix(filename.replace(/\.png$/, ''));
+      artListingCache.push({ filename, prefix });
+    }
+  } catch (e) {
+    artListingCache = null;
+  }
+}
+
+function extractPrefix(name) {
+  const parenIdx = name.indexOf('(');
+  const base = parenIdx >= 0 ? name.substring(0, parenIdx) : name;
+  return base.trim();
+}
+
+function findArtMatch(gameName) {
+  if (!artListingCache) return null;
+  const prefix = extractPrefix(gameName);
+  if (!prefix) return null;
+  const matches = artListingCache.filter(entry => entry.prefix === prefix);
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0].filename;
+  matches.sort((a, b) => a.filename.length - b.filename.length);
+  return matches[0].filename;
+}
+
+async function fetchArtForGame(gameId, gameName) {
+  const match = findArtMatch(gameName);
+  if (!match) return;
+  try {
+    const url = LIBRETRO_BOXART_URL + encodeURIComponent(match);
+    const res = await fetch(url);
+    if (!res.ok) return;
+    const blob = await res.blob();
+    if (blob.size === 0 || blob.size > 2 * 1024 * 1024) return;
+    const uploadRes = await fetch('/api/art/' + gameId, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: blob
+    });
+    if (uploadRes.ok) {
+      updateArtStatus(gameId, 'found');
+    }
+  } catch (e) {
+    // Silently fail
+  }
+}
+
+function updateArtStatus(gameId, status) {
+  const el = document.getElementById('art-' + gameId);
+  if (!el) return;
+  if (status === 'found') {
+    el.textContent = '🖼';
+    el.title = 'Box art downloaded';
+  } else if (status === 'fetching') {
+    el.textContent = '⌛';
+    el.title = 'Fetching box art...';
+  }
+}
+
+async function fetchMissingArt() {
+  if (!artListingCache) {
+    const artStatus = document.getElementById('artStatus');
+    artStatus.className = 'status err';
+    artStatus.textContent = 'Art listing not available. Check your internet connection.';
+    return;
+  }
+
+  const btn = document.getElementById('fetchArtBtn');
+  btn.disabled = true;
+  const artStatus = document.getElementById('artStatus');
+
+  const toFetch = [];
+  for (const game of games) {
+    const res = await fetch('/api/art-exists/' + game.id);
+    const data = await res.json();
+    if (!data.exists) {
+      toFetch.push(game);
+    }
+  }
+
+  if (toFetch.length === 0) {
+    artStatus.className = 'status ok';
+    artStatus.textContent = 'All games already have art!';
+    btn.disabled = false;
+    return;
+  }
+
+  let fetched = 0;
+  for (const game of toFetch) {
+    fetched++;
+    artStatus.className = 'status ok';
+    artStatus.textContent = `Fetching art ${fetched}/${toFetch.length}: ${game.name}...`;
+    await fetchArtForGame(game.id, game.name);
+  }
+
+  artStatus.className = 'status ok';
+  artStatus.textContent = `Done! Attempted art fetch for ${toFetch.length} game(s).`;
+  btn.disabled = false;
 }
 
 function renderLineup() {
@@ -65,6 +184,7 @@ function renderLineup() {
       <button class="btn-down" onclick="moveDown(${i})">&darr;</button>
       <span class="name">${esc(g.name)}</span>
       <span class="system">${esc(g.system)}</span>
+      <span id="art-${esc(g.id)}" class="art-status" title=""></span>
       <button class="btn-remove" onclick="removeGame(${i})">Remove</button>
     </li>
   `).join('');
@@ -95,6 +215,7 @@ function addGame(id, name, path) {
   games.push({ id, name, system: 'arcade', launch: path, art: 'assets/boxart/' + id + '.png' });
   renderLineup();
   renderAvailable();
+  fetchArtForGame(id, name);
 }
 
 function removeGame(i) {
