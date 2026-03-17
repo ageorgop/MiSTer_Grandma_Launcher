@@ -134,28 +134,20 @@ fn handle_request(
                 return;
             }
 
-            // Reject empty body
-            let content_length = request.body_length().unwrap_or(0);
-            if content_length == 0 {
-                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
-                request.respond(
-                    Response::from_string(r#"{"error":"Empty body"}"#)
-                        .with_status_code(400)
-                        .with_header(header)
-                ).ok();
-                return;
-            }
-
-            // Reject body over 2MB
+            // Reject body over 2MB (when Content-Length is known).
+            // For chunked requests, body_length() returns None and the
+            // .take(MAX_ART_SIZE) on the reader provides a hard cap.
             const MAX_ART_SIZE: u64 = 2 * 1024 * 1024;
-            if content_length > MAX_ART_SIZE as usize {
-                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
-                request.respond(
-                    Response::from_string(r#"{"error":"Request body too large"}"#)
-                        .with_status_code(413)
-                        .with_header(header)
-                ).ok();
-                return;
+            if let Some(len) = request.body_length() {
+                if len > MAX_ART_SIZE as usize {
+                    let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                    request.respond(
+                        Response::from_string(r#"{"error":"Request body too large"}"#)
+                            .with_status_code(413)
+                            .with_header(header)
+                    ).ok();
+                    return;
+                }
             }
 
             // Read body bytes
@@ -221,7 +213,7 @@ fn handle_request(
                     error!("Failed to save art for '{}': {}", game_id, e);
                     let header = Header::from_bytes("Content-Type", "application/json").unwrap();
                     request.respond(
-                        Response::from_string(format!(r#"{{"error":"{}"}}"#, e))
+                        Response::from_string(r#"{"error":"Failed to save art"}"#)
                             .with_status_code(500)
                             .with_header(header)
                     ).ok();
