@@ -244,8 +244,8 @@ fn handle_request(
 
         (Method::Get, path) if path.starts_with("/api/art-proxy/") => {
             let remote_path = &path["/api/art-proxy/".len()..];
-            // Only allow proxying to the known thumbnails path
-            if !remote_path.starts_with("MAME/") {
+            // Only allow proxying to the known thumbnails path, reject traversal
+            if !remote_path.starts_with("MAME/") || remote_path.contains("..") {
                 request.respond(
                     Response::from_string("Forbidden").with_status_code(403)
                 ).ok();
@@ -253,8 +253,9 @@ fn handle_request(
             }
             let remote_url = format!("https://thumbnails.libretro.com/{}", remote_path);
             // Shell out to curl for HTTPS, avoiding a TLS library dependency.
+            // -k skips cert verification because MiSTer's rootfs lacks a CA bundle.
             match std::process::Command::new("curl")
-                .args(["-sSfLk", "--max-time", "30", &remote_url])
+                .args(["-sSfLk", "--max-time", "30", "--max-filesize", "10485760", &remote_url])
                 .output()
             {
                 Ok(output) if output.status.success() => {
