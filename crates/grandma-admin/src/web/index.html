@@ -42,6 +42,10 @@
   .btn-upload { background:#4a6; color:white; }
   .btn-search { background:#a86; color:white; }
   .btn-cancel { background:#555; color:white; }
+  .modal-nav { display:flex; gap:8px; align-items:center; justify-content:center; margin-top:12px; }
+  .btn-nav { background:#555; color:white; font-size:0.85em; }
+  .btn-use { background:#48f; color:white; }
+  #matchCounter { font-size:0.85em; color:#aaa; min-width:80px; }
 </style>
 </head>
 <body>
@@ -55,6 +59,12 @@
       <button class="btn-upload" onclick="uploadArt()">Upload PNG</button>
       <button class="btn-search" id="btnSearch" onclick="searchArt()">Search Libretro</button>
       <button class="btn-cancel" onclick="closeArtModal()">Close</button>
+    </div>
+    <div id="modalNav" class="modal-nav" style="display:none">
+      <button class="btn-nav" onclick="prevMatch()">&larr; Prev</button>
+      <span id="matchCounter"></span>
+      <button class="btn-nav" onclick="nextMatch()">Next &rarr;</button>
+      <button class="btn-use" onclick="useThisArt()">Use This</button>
     </div>
     <div id="modalStatus" class="modal-status"></div>
   </div>
@@ -78,9 +88,10 @@ let games = [];
 let available = [];
 let artListingCache = null;
 
-const LIBRETRO_BOXART_URL = 'https://thumbnails.libretro.com/MAME/Named_Boxarts/';
-const PROXY_BOXART_URL = '/api/art-proxy/MAME/Named_Boxarts/';
-let artBaseUrl = PROXY_BOXART_URL;
+const LIBRETRO_BASE = 'https://thumbnails.libretro.com/MAME/';
+const PROXY_BASE = '/api/art-proxy/MAME/';
+const LIBRETRO_DIRS = ['Named_Boxarts', 'Named_Snaps', 'Named_Titles'];
+let useProxy = true;
 
 async function load() {
   const [gamesRes, mraRes] = await Promise.all([
@@ -96,29 +107,40 @@ async function load() {
 }
 
 async function fetchArtListing() {
-  // Try direct first (in case CORS is ever enabled), fall back to proxy
-  for (const baseUrl of [LIBRETRO_BOXART_URL, PROXY_BOXART_URL]) {
+  artListingCache = [];
+  // Determine if we need the proxy (try direct first)
+  for (const base of [LIBRETRO_BASE, PROXY_BASE]) {
     try {
-      const res = await fetch(baseUrl);
+      const res = await fetch(base + 'Named_Boxarts/');
+      if (!res.ok) continue;
+      const html = await res.text();
+      if (!html.includes('.png')) continue;
+      useProxy = (base === PROXY_BASE);
+      break;
+    } catch (e) {
+      continue;
+    }
+  }
+  // Fetch all 3 directories
+  for (const dir of LIBRETRO_DIRS) {
+    try {
+      const base = useProxy ? PROXY_BASE : LIBRETRO_BASE;
+      const res = await fetch(base + dir + '/');
       if (!res.ok) continue;
       const html = await res.text();
       const parser = new DOMParser();
       const doc = parser.parseFromString(html, 'text/html');
       const links = doc.querySelectorAll('a[href$=".png"]');
-      if (links.length === 0) continue;
-      artListingCache = [];
       for (const a of links) {
         const filename = decodeURIComponent(a.getAttribute('href'));
         const prefix = extractPrefix(filename.replace(/\.png$/, ''));
-        artListingCache.push({ filename, prefix });
+        artListingCache.push({ filename, prefix, normalizedPrefix: normalizePrefix(prefix), dir });
       }
-      artBaseUrl = baseUrl;
-      return;
     } catch (e) {
       continue;
     }
   }
-  artListingCache = null;
+  if (artListingCache.length === 0) artListingCache = null;
 }
 
 function extractPrefix(name) {
@@ -127,23 +149,36 @@ function extractPrefix(name) {
   return base.trim();
 }
 
-function findArtMatch(gameName) {
-  if (!artListingCache) return null;
-  const prefix = extractPrefix(gameName);
-  if (!prefix) return null;
-  const matches = artListingCache.filter(entry => entry.prefix === prefix);
-  if (matches.length === 0) return null;
-  if (matches.length === 1) return matches[0].filename;
-  matches.sort((a, b) => a.filename.length - b.filename.length);
-  return matches[0].filename;
+function normalizePrefix(name) {
+  return name.replace(/[^a-zA-Z0-9 ]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function findArtMatches(gameName) {
+  if (!artListingCache) return [];
+  const norm = normalizePrefix(extractPrefix(gameName));
+  if (!norm) return [];
+  // Sort: Named_Boxarts first, then by filename length
+  return artListingCache
+    .filter(entry => entry.normalizedPrefix === norm)
+    .sort((a, b) => {
+      if (a.dir === 'Named_Boxarts' && b.dir !== 'Named_Boxarts') return -1;
+      if (a.dir !== 'Named_Boxarts' && b.dir === 'Named_Boxarts') return 1;
+      return a.filename.length - b.filename.length;
+    });
+}
+
+function artUrl(entry) {
+  const base = useProxy ? PROXY_BASE : LIBRETRO_BASE;
+  return base + entry.dir + '/' + encodeURIComponent(entry.filename);
 }
 
 async function fetchArtForGame(gameId, gameName) {
-  const match = findArtMatch(gameName);
-  if (!match) return;
+  const matches = findArtMatches(gameName);
+  if (matches.length === 0) return;
+  const match = matches[0];
   updateArtStatus(gameId, 'fetching');
   try {
-    const url = artBaseUrl + encodeURIComponent(match);
+    const url = artUrl(match);
     const res = await fetch(url);
     if (!res.ok) return;
     const blob = await res.blob();
@@ -217,13 +252,19 @@ async function openArtModal(gameId) {
 
 function closeArtModal() {
   document.getElementById('artModal').classList.remove('open');
+  document.getElementById('modalNav').style.display = 'none';
   modalGameId = null;
+  modalMatches = [];
+  modalMatchIdx = 0;
 }
 
 function uploadArt() {
   if (!modalGameId) return;
   document.getElementById('artPicker').click();
 }
+
+let modalMatches = [];
+let modalMatchIdx = 0;
 
 async function searchArt() {
   if (!modalGameId) return;
@@ -235,17 +276,65 @@ async function searchArt() {
     status.className = 'modal-status err';
     return;
   }
-  const match = findArtMatch(game.name);
-  if (!match) {
+  modalMatches = findArtMatches(game.name);
+  if (modalMatches.length === 0) {
     status.textContent = 'No match found on libretro.';
     status.className = 'modal-status err';
+    document.getElementById('modalNav').style.display = 'none';
     return;
   }
-  status.textContent = 'Downloading: ' + match + '...';
+  modalMatchIdx = 0;
+  showCurrentMatch();
+}
+
+async function showCurrentMatch() {
+  const entry = modalMatches[modalMatchIdx];
+  const status = document.getElementById('modalStatus');
+  const nav = document.getElementById('modalNav');
+  const counter = document.getElementById('matchCounter');
+  status.textContent = entry.dir + ': ' + entry.filename;
+  status.className = 'modal-status';
+  counter.textContent = (modalMatchIdx + 1) + ' / ' + modalMatches.length;
+  nav.style.display = modalMatches.length > 0 ? 'flex' : 'none';
+  const preview = document.getElementById('modalPreview');
+  preview.innerHTML = '<div class="no-art">Loading...</div>';
+  try {
+    const res = await fetch(artUrl(entry));
+    if (res.ok) {
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      preview.innerHTML = '';
+      const img = document.createElement('img');
+      img.src = url;
+      preview.appendChild(img);
+    } else {
+      preview.innerHTML = '<div class="no-art">Failed to load</div>';
+    }
+  } catch (e) {
+    preview.innerHTML = '<div class="no-art">Failed to load</div>';
+  }
+}
+
+function prevMatch() {
+  if (modalMatches.length === 0) return;
+  modalMatchIdx = (modalMatchIdx - 1 + modalMatches.length) % modalMatches.length;
+  showCurrentMatch();
+}
+
+function nextMatch() {
+  if (modalMatches.length === 0) return;
+  modalMatchIdx = (modalMatchIdx + 1) % modalMatches.length;
+  showCurrentMatch();
+}
+
+async function useThisArt() {
+  if (!modalGameId || modalMatches.length === 0) return;
+  const entry = modalMatches[modalMatchIdx];
+  const status = document.getElementById('modalStatus');
+  status.textContent = 'Saving...';
   status.className = 'modal-status';
   try {
-    const url = artBaseUrl + encodeURIComponent(match);
-    const res = await fetch(url);
+    const res = await fetch(artUrl(entry));
     if (!res.ok) { status.textContent = 'Download failed.'; status.className = 'modal-status err'; return; }
     const blob = await res.blob();
     const uploadRes = await fetch('/api/art/' + modalGameId, {
@@ -254,12 +343,11 @@ async function searchArt() {
       body: blob
     });
     if (uploadRes.ok) {
-      status.textContent = 'Found: ' + match;
+      status.textContent = 'Saved!';
       status.className = 'modal-status';
-      await refreshModalPreview();
       loadThumb(modalGameId);
     } else {
-      status.textContent = 'Upload failed.';
+      status.textContent = 'Save failed.';
       status.className = 'modal-status err';
     }
   } catch (e) {
