@@ -1,0 +1,10 @@
+[package]
+name = "grandma-supervisor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+grandma-common = { path = "../grandma-common" }
+log = { workspace = true }
+simplelog = { workspace = true }
+file-rotate = { workspace = true }

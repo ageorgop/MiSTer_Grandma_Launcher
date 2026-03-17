@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "games": [
+    {
+      "id": "galagamidwayset1",
+      "name": "Galaga (Midway, Set 1)",
+      "system": "arcade",
+      "launch": "/media/fat/_Arcade/Galaga (Midway, Set 1).mra",
+      "art": "assets/boxart/galagamidwayset1.png"
+    },
+    {
+      "id": "mspacman",
+      "name": "Ms. Pac-Man",
+      "system": "arcade",
+      "launch": "/media/fat/_Arcade/Ms. Pac-Man.mra",
+      "art": "assets/boxart/mspacman.png"
+    },
+    {
+      "id": "donkeykongusset1",
+      "name": "Donkey Kong (US, Set 1)",
+      "system": "arcade",
+      "launch": "/media/fat/_Arcade/Donkey Kong (US, Set 1).mra",
+      "art": "assets/boxart/donkeykongusset1.png"
+    }
+  ]
+}

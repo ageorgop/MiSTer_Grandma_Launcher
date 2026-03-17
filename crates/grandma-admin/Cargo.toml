@@ -1,0 +1,12 @@
+[package]
+name = "grandma-admin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+grandma-common = { path = "../grandma-common" }
+log = { workspace = true }
+simplelog = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tiny_http = "0.12"

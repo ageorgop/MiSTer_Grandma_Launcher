@@ -1,0 +1,15 @@
+[package]
+name = "grandma-launcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+grandma-common = { path = "../grandma-common" }
+log = { workspace = true }
+simplelog = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
+fontdue = "0.9"
+evdev = "0.13"
+libc = "0.2"
+serde = { workspace = true }
+serde_json = { workspace = true }

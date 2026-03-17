@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grandma Launcher Admin</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #eee; padding: 20px; max-width: 900px; margin: 0 auto; }
+  h1 { margin-bottom: 20px; color: #80a0ff; }
+  h2 { margin: 20px 0 10px; color: #aaa; font-size: 1.1em; }
+  .game-list { list-style: none; }
+  .game-list li { display: flex; align-items: center; gap: 12px; padding: 10px 14px; margin: 4px 0; background: #2a2a4e; border-radius: 8px; }
+  .game-list li .name { flex: 1; font-size: 1.1em; }
+  .game-list li .system { color: #888; font-size: 0.85em; }
+  button { padding: 6px 14px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9em; }
+  .btn-add { background: #4a6; color: white; }
+  .btn-remove { background: #a44; color: white; }
+  .btn-save { background: #48f; color: white; font-size: 1.1em; padding: 10px 24px; margin-top: 20px; }
+  .btn-up, .btn-down { background: #555; color: white; font-size: 0.8em; padding: 4px 8px; }
+  .available { max-height: 400px; overflow-y: auto; border: 1px solid #444; border-radius: 8px; padding: 8px; margin-bottom: 20px; }
+  .available li { cursor: pointer; }
+  .available li:hover { background: #3a3a6e; }
+  .status { margin-top: 10px; padding: 10px; border-radius: 6px; display: none; }
+  .status.ok { display: block; background: #2a4a2a; color: #8f8; }
+  .status.err { display: block; background: #4a2a2a; color: #f88; }
+  .search { width: 100%; padding: 8px 12px; margin-bottom: 10px; border: 1px solid #555; border-radius: 6px; background: #222; color: #eee; font-size: 1em; }
+</style>
+</head>
+<body>
+<h1>Grandma Launcher</h1>
+
+<h2>Current Game Lineup</h2>
+<ul class="game-list" id="lineup"></ul>
+<button class="btn-save" onclick="saveGames()">Save &amp; Apply</button>
+<div id="status" class="status"></div>
+
+<h2>Add Games from Arcade Library</h2>
+<input type="text" class="search" id="search" placeholder="Search arcade games..." oninput="filterAvailable()">
+<div class="available">
+  <ul class="game-list" id="available"></ul>
+</div>
+
+<script>
+let games = [];
+let available = [];
+
+async function load() {
+  const [gamesRes, mraRes] = await Promise.all([
+    fetch('/api/games'),
+    fetch('/api/available-mra')
+  ]);
+  const config = await gamesRes.json();
+  games = config.games || [];
+  available = await mraRes.json();
+  renderLineup();
+  renderAvailable();
+}
+
+function renderLineup() {
+  const el = document.getElementById('lineup');
+  el.innerHTML = games.map((g, i) => `
+    <li>
+      <button class="btn-up" onclick="moveUp(${i})">&uarr;</button>
+      <button class="btn-down" onclick="moveDown(${i})">&darr;</button>
+      <span class="name">${esc(g.name)}</span>
+      <span class="system">${esc(g.system)}</span>
+      <button class="btn-remove" onclick="removeGame(${i})">Remove</button>
+    </li>
+  `).join('');
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function renderAvailable() {
+  const search = document.getElementById('search').value.toLowerCase();
+  const inLineup = new Set(games.map(g => g.launch));
+  const filtered = available.filter(m =>
+    !inLineup.has(m.path) && m.name.toLowerCase().includes(search)
+  );
+  const el = document.getElementById('available');
+  el.innerHTML = filtered.map(m => `
+    <li onclick="addGame(${JSON.stringify(m.id).replace(/"/g, '&quot;')}, ${JSON.stringify(m.name).replace(/"/g, '&quot;')}, ${JSON.stringify(m.path).replace(/"/g, '&quot;')})">
+      <span class="name">${esc(m.name)}</span>
+      <button class="btn-add">Add</button>
+    </li>
+  `).join('');
+}
+
+function addGame(id, name, path) {
+  games.push({ id, name, system: 'arcade', launch: path, art: 'assets/boxart/' + id + '.png' });
+  renderLineup();
+  renderAvailable();
+}
+
+function removeGame(i) {
+  games.splice(i, 1);
+  renderLineup();
+  renderAvailable();
+}
+
+function moveUp(i) {
+  if (i === 0) return;
+  [games[i-1], games[i]] = [games[i], games[i-1]];
+  renderLineup();
+}
+
+function moveDown(i) {
+  if (i >= games.length - 1) return;
+  [games[i], games[i+1]] = [games[i+1], games[i]];
+  renderLineup();
+}
+
+function filterAvailable() { renderAvailable(); }
+
+async function saveGames() {
+  const status = document.getElementById('status');
+  try {
+    const res = await fetch('/api/games', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schema: 1, games })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      status.className = 'status ok';
+      status.textContent = 'Saved! Games will appear next time the launcher starts.';
+    } else {
+      status.className = 'status err';
+      status.textContent = 'Error: ' + (data.error || 'Unknown');
+    }
+  } catch (e) {
+    status.className = 'status err';
+    status.textContent = 'Error: ' + e.message;
+  }
+}
+
+load();
+</script>
+</body>
+</html>
