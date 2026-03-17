@@ -23,6 +23,7 @@ impl GrandmaPaths {
     pub fn boxart_dir(&self) -> PathBuf { self.base.join("assets/boxart") }
     pub fn placeholder_art(&self) -> PathBuf { self.base.join("assets/placeholder.png") }
     pub fn font_file(&self) -> PathBuf { self.base.join("assets/font.ttf") }
+    pub fn pid_file(&self) -> PathBuf { self.base.join("supervisor.pid") }
     pub fn kill_switch() -> PathBuf { PathBuf::from("/media/fat/grandma_launcher.disabled") }
     pub fn mister_cmd() -> PathBuf { PathBuf::from("/dev/MiSTer_cmd") }
     pub fn arcade_dir() -> PathBuf { PathBuf::from("/media/fat/_Arcade") }
