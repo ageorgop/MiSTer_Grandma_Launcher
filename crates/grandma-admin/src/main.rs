@@ -242,6 +242,46 @@ fn handle_request(
             request.respond(Response::from_string(json).with_header(header)).ok();
         }
 
+        (Method::Get, path) if path.starts_with("/api/art-proxy/") => {
+            let remote_path = &path["/api/art-proxy/".len()..];
+            // Only allow proxying to the known thumbnails path
+            if !remote_path.starts_with("MAME/") {
+                request.respond(
+                    Response::from_string("Forbidden").with_status_code(403)
+                ).ok();
+                return;
+            }
+            let remote_url = format!("https://thumbnails.libretro.com/{}", remote_path);
+            // Shell out to curl for HTTPS, avoiding a TLS library dependency.
+            match std::process::Command::new("curl")
+                .args(["-sSfL", "--max-time", "30", &remote_url])
+                .output()
+            {
+                Ok(output) if output.status.success() => {
+                    let content_type = if remote_path.ends_with(".png") {
+                        "image/png"
+                    } else {
+                        "text/html; charset=utf-8"
+                    };
+                    let header = Header::from_bytes("Content-Type", content_type).unwrap();
+                    request.respond(
+                        Response::from_data(output.stdout).with_header(header)
+                    ).ok();
+                }
+                Ok(_) => {
+                    request.respond(
+                        Response::from_string("Not found").with_status_code(404)
+                    ).ok();
+                }
+                Err(e) => {
+                    error!("Art proxy error (curl): {}", e);
+                    request.respond(
+                        Response::from_string("Proxy error").with_status_code(502)
+                    ).ok();
+                }
+            }
+        }
+
         _ => {
             request.respond(Response::from_string("404").with_status_code(404)).ok();
         }

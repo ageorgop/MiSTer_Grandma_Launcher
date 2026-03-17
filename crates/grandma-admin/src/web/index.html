@@ -51,6 +51,8 @@ let available = [];
 let artListingCache = null;
 
 const LIBRETRO_BOXART_URL = 'https://thumbnails.libretro.com/MAME/Named_Boxarts/';
+const PROXY_BOXART_URL = '/api/art-proxy/MAME/Named_Boxarts/';
+let artBaseUrl = PROXY_BOXART_URL;
 
 async function load() {
   const [gamesRes, mraRes] = await Promise.all([
@@ -66,22 +68,29 @@ async function load() {
 }
 
 async function fetchArtListing() {
-  try {
-    const res = await fetch(LIBRETRO_BOXART_URL);
-    if (!res.ok) return;
-    const html = await res.text();
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
-    const links = doc.querySelectorAll('a[href$=".png"]');
-    artListingCache = [];
-    for (const a of links) {
-      const filename = decodeURIComponent(a.getAttribute('href'));
-      const prefix = extractPrefix(filename.replace(/\.png$/, ''));
-      artListingCache.push({ filename, prefix });
+  // Try direct first (in case CORS is ever enabled), fall back to proxy
+  for (const baseUrl of [LIBRETRO_BOXART_URL, PROXY_BOXART_URL]) {
+    try {
+      const res = await fetch(baseUrl);
+      if (!res.ok) continue;
+      const html = await res.text();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      const links = doc.querySelectorAll('a[href$=".png"]');
+      if (links.length === 0) continue;
+      artListingCache = [];
+      for (const a of links) {
+        const filename = decodeURIComponent(a.getAttribute('href'));
+        const prefix = extractPrefix(filename.replace(/\.png$/, ''));
+        artListingCache.push({ filename, prefix });
+      }
+      artBaseUrl = baseUrl;
+      return;
+    } catch (e) {
+      continue;
     }
-  } catch (e) {
-    artListingCache = null;
   }
+  artListingCache = null;
 }
 
 function extractPrefix(name) {
@@ -106,7 +115,7 @@ async function fetchArtForGame(gameId, gameName) {
   if (!match) return;
   updateArtStatus(gameId, 'fetching');
   try {
-    const url = LIBRETRO_BOXART_URL + encodeURIComponent(match);
+    const url = artBaseUrl + encodeURIComponent(match);
     const res = await fetch(url);
     if (!res.ok) return;
     const blob = await res.blob();
