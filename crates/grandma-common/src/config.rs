@@ -17,6 +17,16 @@ pub struct GameEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Resolution {
+    pub width: u32,
+    pub height: u32,
+}
+
+fn default_resolution() -> Resolution {
+    Resolution { width: 1920, height: 1080 }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub schema: u32,
     #[serde(default = "default_title")]
@@ -29,6 +39,8 @@ pub struct Settings {
     pub admin_port: u16,
     #[serde(default = "default_columns")]
     pub columns: u32,
+    #[serde(default = "default_resolution")]
+    pub resolution: Resolution,
 }
 
 fn default_title() -> String { "GAME TIME!".to_string() }
@@ -58,6 +70,7 @@ impl Default for Settings {
             admin_server: false,
             admin_port: default_admin_port(),
             columns: default_columns(),
+            resolution: default_resolution(),
         }
     }
 }
@@ -192,5 +205,24 @@ mod tests {
         }
         assert_eq!(state.recently_played.len(), 5);
         assert_eq!(state.recently_played[0], "game6");
+    }
+
+    #[test]
+    fn test_settings_with_resolution() {
+        let json = r#"{
+            "schema": 1,
+            "resolution": { "width": 1280, "height": 720 }
+        }"#;
+        let settings: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.resolution.width, 1280);
+        assert_eq!(settings.resolution.height, 720);
+    }
+
+    #[test]
+    fn test_settings_without_resolution_uses_default() {
+        let json = r#"{"schema": 1}"#;
+        let settings: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.resolution.width, 1920);
+        assert_eq!(settings.resolution.height, 1080);
     }
 }
