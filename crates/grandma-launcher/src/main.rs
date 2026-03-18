@@ -231,8 +231,9 @@ fn main() -> ExitCode {
     // Load art
     let art_cache = load_art_cache(&valid_games, &paths);
 
-    // Open FPGA framebuffer (falls back to mock on non-MiSTer hardware)
-    let mut fb = match framebuf::Framebuffer::open() {
+    // Open framebuffer (falls back to mock on non-MiSTer hardware)
+    let default_resolution = grandma_common::config::Resolution { width: 1920, height: 1080 };
+    let mut fb = match framebuf::Framebuffer::open(&default_resolution) {
         Ok(fb) => fb,
         Err(e) => {
             error!("Failed to open framebuffer: {}", e);
