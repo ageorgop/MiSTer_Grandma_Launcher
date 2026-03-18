@@ -24,7 +24,7 @@ setsid "$BIN" "$INSTALL_DIR" </dev/null >/dev/null 2>&1 &
 echo $! > "$PIDFILE"
 
 PORT=$(grep -o '"admin_port"[[:space:]]*:[[:space:]]*[0-9]*' "$INSTALL_DIR/settings.json" 2>/dev/null | grep -o '[0-9]*$' || echo "8080")
-IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "<mister-ip>")
+IP=$(ifconfig eth0|awk '/inet/ {print $2}' || echo "<mister-ip>")
 
 echo "Admin server started (PID $(cat "$PIDFILE"))"
 echo "Open in your browser: http://${IP}:${PORT}"
