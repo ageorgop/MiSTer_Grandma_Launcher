@@ -54,101 +54,6 @@ fn load_art_cache(games: &[grandma_common::config::GameEntry], paths: &GrandmaPa
     cache
 }
 
-/// Enable the FPGA framebuffer display by sending F9 via a uinput virtual keyboard.
-/// MiSTer's menu code handles F9 by calling video_fb_enable() which sends the SPI
-/// commands to the FPGA. Synthetic keypresses on existing devices are blocked by
-/// EVIOCGRAB, so we create a new uinput device that MiSTer discovers via inotify.
-#[cfg(target_os = "linux")]
-fn enable_fpga_framebuffer() -> Result<(), String> {
-    const UI_SET_EVBIT: libc::Ioctl = 0x40045564;
-    const UI_SET_KEYBIT: libc::Ioctl = 0x40045565;
-    const UI_DEV_CREATE: libc::Ioctl = 0x5501;
-    const UI_DEV_DESTROY: libc::Ioctl = 0x5502;
-    const EV_KEY: u16 = 1;
-    const EV_SYN: u16 = 0;
-    const KEY_F9: u16 = 67;
-
-    let uinput_path = std::ffi::CString::new("/dev/uinput")
-        .map_err(|e| format!("CString error: {}", e))?;
-
-    let fd = unsafe { libc::open(uinput_path.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK) };
-    if fd < 0 {
-        return Err(format!("Failed to open /dev/uinput: {}", std::io::Error::last_os_error()));
-    }
-
-    unsafe {
-        libc::ioctl(fd, UI_SET_EVBIT, EV_KEY as libc::c_int);
-        libc::ioctl(fd, UI_SET_KEYBIT, KEY_F9 as libc::c_int);
-    }
-
-    // uinput_user_dev struct: name[80] + id(4xu16) + ff_max(u32) + abs arrays
-    let mut dev_buf = vec![0u8; 80 + 8 + 4 + 64 * 4 * 4];
-    dev_buf[..11].copy_from_slice(b"grandma-kbd");
-
-    let written = unsafe { libc::write(fd, dev_buf.as_ptr() as *const libc::c_void, dev_buf.len()) };
-    if written < 0 {
-        unsafe { libc::close(fd); }
-        return Err(format!("Failed to write uinput dev: {}", std::io::Error::last_os_error()));
-    }
-
-    if unsafe { libc::ioctl(fd, UI_DEV_CREATE) } < 0 {
-        unsafe { libc::close(fd); }
-        return Err(format!("UI_DEV_CREATE failed: {}", std::io::Error::last_os_error()));
-    }
-
-    // Wait for MiSTer to discover the new device via inotify
-    std::thread::sleep(std::time::Duration::from_secs(2));
-
-    // Send F9 keypress
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let sec = now.as_secs() as i32;
-    let usec = now.subsec_micros() as i32;
-
-    #[repr(C)]
-    struct InputEvent {
-        sec: i32,
-        usec: i32,
-        type_: u16,
-        code: u16,
-        value: i32,
-    }
-
-    let events = [
-        InputEvent { sec, usec, type_: EV_KEY, code: KEY_F9, value: 1 }, // press
-        InputEvent { sec, usec, type_: EV_SYN, code: 0, value: 0 },
-    ];
-
-    for ev in &events {
-        unsafe {
-            libc::write(fd, ev as *const _ as *const libc::c_void, std::mem::size_of::<InputEvent>());
-        }
-    }
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let release_events = [
-        InputEvent { sec, usec, type_: EV_KEY, code: KEY_F9, value: 0 }, // release
-        InputEvent { sec, usec, type_: EV_SYN, code: 0, value: 0 },
-    ];
-
-    for ev in &release_events {
-        unsafe {
-            libc::write(fd, ev as *const _ as *const libc::c_void, std::mem::size_of::<InputEvent>());
-        }
-    }
-
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    unsafe {
-        libc::ioctl(fd, UI_DEV_DESTROY);
-        libc::close(fd);
-    }
-
-    Ok(())
-}
-
 /// Write a command to /dev/MiSTer_cmd using non-blocking open.
 #[cfg(target_os = "linux")]
 fn write_mister_cmd(command: &str) -> Result<(), String> {
@@ -231,37 +136,18 @@ fn main() -> ExitCode {
     // Load art
     let art_cache = load_art_cache(&valid_games, &paths);
 
+    // Load settings
+    let settings = grandma_common::config::Settings::load(&paths.settings_json())
+        .unwrap_or_default();
+
     // Open framebuffer (falls back to mock on non-MiSTer hardware)
-    let default_resolution = grandma_common::config::Resolution { width: 1920, height: 1080 };
-    let mut fb = match framebuf::Framebuffer::open(&default_resolution) {
+    let mut fb = match framebuf::Framebuffer::open(&settings.resolution) {
         Ok(fb) => fb,
         Err(e) => {
             error!("Failed to open framebuffer: {}", e);
             return ExitCode::FAILURE;
         }
     };
-
-    // Enable the FPGA framebuffer display. This requires two steps:
-    // 1. Send F9 via uinput to trigger MiSTer's video_fb_enable() (SPI setup)
-    // 2. Send fb_cmd to configure resolution/format
-    #[cfg(target_os = "linux")]
-    {
-        info!("Enabling FPGA framebuffer via uinput F9");
-        match enable_fpga_framebuffer() {
-            Ok(_) => info!("FPGA framebuffer enabled"),
-            Err(e) => warn!("Failed to enable FPGA framebuffer: {}", e),
-        }
-
-        info!("Sending fb_cmd to configure framebuffer mode");
-        match write_mister_cmd("fb_cmd0 8888 1 1\n") {
-            Ok(_) => info!("MiSTer framebuffer mode configured"),
-            Err(e) => warn!("Failed to send fb_cmd: {}", e),
-        }
-    }
-
-    // Load settings
-    let settings = grandma_common::config::Settings::load(&paths.settings_json())
-        .unwrap_or_default();
 
     // Build grid state
     let mut grid = GridState::new(

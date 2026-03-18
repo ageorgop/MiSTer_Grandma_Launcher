@@ -76,8 +76,13 @@ impl Framebuffer {
         #[cfg(target_os = "linux")]
         {
             // Set resolution via vmode
-            let vmode_cmd = format!("vmode -r {} {} rgb32", resolution.width, resolution.height);
-            match std::process::Command::new("sh").arg("-c").arg(&vmode_cmd).status() {
+            match std::process::Command::new("vmode")
+                .arg("-r")
+                .arg(resolution.width.to_string())
+                .arg(resolution.height.to_string())
+                .arg("rgb32")
+                .status()
+            {
                 Ok(status) => {
                     if status.success() {
                         log::info!("vmode set to {}x{} rgb32", resolution.width, resolution.height);
@@ -120,6 +125,11 @@ impl Framebuffer {
             let mmap_len = finfo.smem_len as usize;
 
             log::info!("fb0: {}x{} bpp={} stride={} size={}", width, height, bpp, stride, mmap_len);
+
+            if mmap_len == 0 {
+                log::warn!("fb0 reported smem_len=0 — using mock");
+                return Ok(Self::mock(resolution.width, resolution.height));
+            }
 
             if bpp != 4 {
                 log::warn!("Expected 32bpp, got {}bpp — using mock", bpp * 8);
