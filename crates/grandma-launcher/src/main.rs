@@ -54,10 +54,41 @@ fn load_art_cache(games: &[grandma_common::config::GameEntry], paths: &GrandmaPa
     cache
 }
 
+/// Write a command to /dev/MiSTer_cmd using non-blocking open.
+#[cfg(target_os = "linux")]
+fn write_mister_cmd(command: &str) -> Result<(), String> {
+    let cmd_path = GrandmaPaths::mister_cmd();
+    if !cmd_path.exists() {
+        return Err("MiSTer_cmd FIFO not found".to_string());
+    }
+
+    let c_path = std::ffi::CString::new(
+        cmd_path.to_str().unwrap_or("/dev/MiSTer_cmd")
+    ).map_err(|e| format!("Invalid path: {}", e))?;
+
+    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK) };
+    if fd < 0 {
+        return Err(format!("Failed to open MiSTer_cmd: {}", std::io::Error::last_os_error()));
+    }
+
+    let bytes = command.as_bytes();
+    let written = unsafe { libc::write(fd, bytes.as_ptr() as *const libc::c_void, bytes.len()) };
+    unsafe { libc::close(fd); }
+
+    if written < 0 {
+        Err(format!("Failed to write to MiSTer_cmd: {}", std::io::Error::last_os_error()))
+    } else if (written as usize) != bytes.len() {
+        Err(format!("Partial write to MiSTer_cmd: {} of {} bytes", written, bytes.len()))
+    } else {
+        Ok(())
+    }
+}
+
 /// Enable the FPGA framebuffer display by sending F9 via a uinput virtual keyboard.
 /// MiSTer's menu code handles F9 by calling video_fb_enable() which sends the SPI
-/// commands to the FPGA. Synthetic keypresses on existing devices are blocked by
-/// EVIOCGRAB, so we create a new uinput device that MiSTer discovers via inotify.
+/// commands to the FPGA to switch display output to the Linux framebuffer.
+/// Synthetic keypresses on existing devices are blocked by EVIOCGRAB, so we create
+/// a new uinput device that MiSTer discovers via inotify.
 #[cfg(target_os = "linux")]
 fn enable_fpga_framebuffer() -> Result<(), String> {
     const UI_SET_EVBIT: libc::Ioctl = 0x40045564;
@@ -116,7 +147,7 @@ fn enable_fpga_framebuffer() -> Result<(), String> {
     }
 
     let events = [
-        InputEvent { sec, usec, type_: EV_KEY, code: KEY_F9, value: 1 }, // press
+        InputEvent { sec, usec, type_: EV_KEY, code: KEY_F9, value: 1 },
         InputEvent { sec, usec, type_: EV_SYN, code: 0, value: 0 },
     ];
 
@@ -129,7 +160,7 @@ fn enable_fpga_framebuffer() -> Result<(), String> {
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     let release_events = [
-        InputEvent { sec, usec, type_: EV_KEY, code: KEY_F9, value: 0 }, // release
+        InputEvent { sec, usec, type_: EV_KEY, code: KEY_F9, value: 0 },
         InputEvent { sec, usec, type_: EV_SYN, code: 0, value: 0 },
     ];
 
@@ -147,36 +178,6 @@ fn enable_fpga_framebuffer() -> Result<(), String> {
     }
 
     Ok(())
-}
-
-/// Write a command to /dev/MiSTer_cmd using non-blocking open.
-#[cfg(target_os = "linux")]
-fn write_mister_cmd(command: &str) -> Result<(), String> {
-    let cmd_path = GrandmaPaths::mister_cmd();
-    if !cmd_path.exists() {
-        return Err("MiSTer_cmd FIFO not found".to_string());
-    }
-
-    let c_path = std::ffi::CString::new(
-        cmd_path.to_str().unwrap_or("/dev/MiSTer_cmd")
-    ).map_err(|e| format!("Invalid path: {}", e))?;
-
-    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK) };
-    if fd < 0 {
-        return Err(format!("Failed to open MiSTer_cmd: {}", std::io::Error::last_os_error()));
-    }
-
-    let bytes = command.as_bytes();
-    let written = unsafe { libc::write(fd, bytes.as_ptr() as *const libc::c_void, bytes.len()) };
-    unsafe { libc::close(fd); }
-
-    if written < 0 {
-        Err(format!("Failed to write to MiSTer_cmd: {}", std::io::Error::last_os_error()))
-    } else if (written as usize) != bytes.len() {
-        Err(format!("Partial write to MiSTer_cmd: {} of {} bytes", written, bytes.len()))
-    } else {
-        Ok(())
-    }
 }
 
 fn launch_game(game: &grandma_common::config::GameEntry) -> Result<(), String> {
@@ -231,18 +232,13 @@ fn main() -> ExitCode {
     // Load art
     let art_cache = load_art_cache(&valid_games, &paths);
 
-    // Open FPGA framebuffer (falls back to mock on non-MiSTer hardware)
-    let mut fb = match framebuf::Framebuffer::open() {
-        Ok(fb) => fb,
-        Err(e) => {
-            error!("Failed to open framebuffer: {}", e);
-            return ExitCode::FAILURE;
-        }
-    };
+    // Load settings
+    let settings = grandma_common::config::Settings::load(&paths.settings_json())
+        .unwrap_or_default();
 
-    // Enable the FPGA framebuffer display. This requires two steps:
-    // 1. Send F9 via uinput to trigger MiSTer's video_fb_enable() (SPI setup)
-    // 2. Send fb_cmd to configure resolution/format
+    // Enable the FPGA framebuffer display, then configure resolution via vmode.
+    // F9 tells MiSTer to switch the FPGA scaler to show the Linux framebuffer.
+    // vmode then sets the resolution and pixel format via /dev/MiSTer_cmd.
     #[cfg(target_os = "linux")]
     {
         info!("Enabling FPGA framebuffer via uinput F9");
@@ -250,17 +246,17 @@ fn main() -> ExitCode {
             Ok(_) => info!("FPGA framebuffer enabled"),
             Err(e) => warn!("Failed to enable FPGA framebuffer: {}", e),
         }
-
-        info!("Sending fb_cmd to configure framebuffer mode");
-        match write_mister_cmd("fb_cmd0 8888 1 1\n") {
-            Ok(_) => info!("MiSTer framebuffer mode configured"),
-            Err(e) => warn!("Failed to send fb_cmd: {}", e),
-        }
     }
 
-    // Load settings
-    let settings = grandma_common::config::Settings::load(&paths.settings_json())
-        .unwrap_or_default();
+    // Open framebuffer (falls back to mock on non-MiSTer hardware)
+    // Framebuffer::open() runs vmode to set resolution, then mmaps /dev/fb0
+    let mut fb = match framebuf::Framebuffer::open(&settings.resolution) {
+        Ok(fb) => fb,
+        Err(e) => {
+            error!("Failed to open framebuffer: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
 
     // Build grid state
     let mut grid = GridState::new(

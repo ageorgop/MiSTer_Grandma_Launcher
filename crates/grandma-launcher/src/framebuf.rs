@@ -32,82 +32,109 @@ impl Color {
     pub const DARK_BG: Self = Self { r: 20, g: 20, b: 30, a: 255 };
 }
 
-/// FPGA framebuffer base address in DDR3 memory
 #[cfg(target_os = "linux")]
-const FPGA_FB_BASE: u64 = 0x22000000;
-/// MiSTer skips the first 4096 bytes of the framebuffer region
+const FBIOGET_VSCREENINFO: libc::Ioctl = 0x4600;
 #[cfg(target_os = "linux")]
-const FPGA_FB_OFFSET: u64 = 4096;
+const FBIOGET_FSCREENINFO: libc::Ioctl = 0x4602;
 
-/// Framebuffer parameters read from sysfs or defaults
-#[derive(Debug, Clone)]
-pub struct FbParams {
-    pub width: u32,
-    pub height: u32,
-    pub stride: u32,
-    pub format: u32,
+/// Subset of fb_var_screeninfo (full struct is 160 bytes)
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct FbVarScreeninfo {
+    xres: u32,
+    yres: u32,
+    xres_virtual: u32,
+    yres_virtual: u32,
+    xoffset: u32,
+    yoffset: u32,
+    bits_per_pixel: u32,
+    grayscale: u32,
+    _pad: [u8; 128],
 }
 
-impl FbParams {
-    /// Default MiSTer framebuffer parameters (1080p BGRA)
-    fn defaults() -> Self {
-        Self { width: 1920, height: 1080, stride: 1920 * 4, format: 6 }
-    }
-
-    /// Read framebuffer parameters from MiSTer sysfs
-    #[cfg(target_os = "linux")]
-    pub fn from_sysfs() -> Self {
-        let read = |name: &str| -> Option<String> {
-            let path = format!("/sys/module/MiSTer_fb/parameters/{}", name);
-            std::fs::read_to_string(path).ok().map(|s| s.trim().to_string())
-        };
-        Self::parse_from_strings(
-            read("width").as_deref(),
-            read("height").as_deref(),
-            read("stride").as_deref(),
-            read("format").as_deref(),
-        )
-    }
-
-    /// Parse parameters from optional strings, falling back to defaults
-    pub fn parse_from_strings(
-        width: Option<&str>,
-        height: Option<&str>,
-        stride: Option<&str>,
-        format: Option<&str>,
-    ) -> Self {
-        let defaults = Self::defaults();
-        let w = width.and_then(|s| s.parse().ok()).unwrap_or(defaults.width);
-        let h = height.and_then(|s| s.parse().ok()).unwrap_or(defaults.height);
-        let mut s = stride.and_then(|s| s.parse().ok()).unwrap_or(w * 4);
-        let f = format.and_then(|s| s.parse().ok()).unwrap_or(defaults.format);
-        if s < w * 4 {
-            s = w * 4;
-        }
-        Self { width: w, height: h, stride: s, format: f }
-    }
+/// Subset of fb_fix_screeninfo
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct FbFixScreeninfo {
+    id: [u8; 16],
+    smem_start: libc::c_ulong,
+    smem_len: u32,
+    type_: u32,
+    type_aux: u32,
+    visual: u32,
+    xpanstep: u16,
+    ypanstep: u16,
+    ywrapstep: u16,
+    _pad0: u16,
+    line_length: u32,
+    _pad: [u8; 32],
 }
 
 impl Framebuffer {
-    /// Open the MiSTer FPGA framebuffer via /dev/mem mmap
-    pub fn open() -> Result<Self, String> {
+    /// Open the Linux framebuffer via /dev/fb0
+    pub fn open(resolution: &grandma_common::config::Resolution) -> Result<Self, String> {
         #[cfg(target_os = "linux")]
         {
-            let params = FbParams::from_sysfs();
-            log::info!(
-                "FB params: {}x{} stride={} format={}",
-                params.width, params.height, params.stride, params.format
-            );
+            // Set resolution via vmode
+            match std::process::Command::new("vmode")
+                .arg("-r")
+                .arg(resolution.width.to_string())
+                .arg(resolution.height.to_string())
+                .arg("rgb32")
+                .status()
+            {
+                Ok(status) => {
+                    if status.success() {
+                        log::info!("vmode set to {}x{} rgb32", resolution.width, resolution.height);
+                    } else {
+                        log::warn!("vmode exited with status {} — continuing anyway", status);
+                    }
+                }
+                Err(e) => log::warn!("Failed to run vmode: {} — continuing anyway", e),
+            }
 
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open("/dev/mem")
-                .map_err(|e| format!("Failed to open /dev/mem: {}", e))?;
+            // Open /dev/fb0
+            let file = match std::fs::OpenOptions::new().read(true).write(true).open("/dev/fb0") {
+                Ok(f) => f,
+                Err(e) => {
+                    log::warn!("Failed to open /dev/fb0: {} — using mock framebuffer", e);
+                    return Ok(Self::mock(resolution.width, resolution.height));
+                }
+            };
 
-            let bpp = 4u32;
-            let mmap_len = (params.stride * params.height * 3) as usize;
-            let mmap_offset = FPGA_FB_BASE + FPGA_FB_OFFSET;
+            let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
+
+            // Query framebuffer dimensions via ioctl
+            let mut vinfo: FbVarScreeninfo = unsafe { std::mem::zeroed() };
+            let mut finfo: FbFixScreeninfo = unsafe { std::mem::zeroed() };
+
+            if unsafe { libc::ioctl(fd, FBIOGET_VSCREENINFO, &mut vinfo) } < 0 {
+                log::warn!("FBIOGET_VSCREENINFO failed: {} — using mock", std::io::Error::last_os_error());
+                return Ok(Self::mock(resolution.width, resolution.height));
+            }
+
+            if unsafe { libc::ioctl(fd, FBIOGET_FSCREENINFO, &mut finfo) } < 0 {
+                log::warn!("FBIOGET_FSCREENINFO failed: {} — using mock", std::io::Error::last_os_error());
+                return Ok(Self::mock(resolution.width, resolution.height));
+            }
+
+            let width = vinfo.xres;
+            let height = vinfo.yres;
+            let bpp = (vinfo.bits_per_pixel / 8) as u32;
+            let stride = finfo.line_length;
+            let mmap_len = finfo.smem_len as usize;
+
+            log::info!("fb0: {}x{} bpp={} stride={} size={}", width, height, bpp, stride, mmap_len);
+
+            if mmap_len == 0 {
+                log::warn!("fb0 reported smem_len=0 — using mock");
+                return Ok(Self::mock(resolution.width, resolution.height));
+            }
+
+            if bpp != 4 {
+                log::warn!("Expected 32bpp, got {}bpp — using mock", bpp * 8);
+                return Ok(Self::mock(resolution.width, resolution.height));
+            }
 
             let mmap_ptr = unsafe {
                 libc::mmap(
@@ -115,32 +142,26 @@ impl Framebuffer {
                     mmap_len,
                     libc::PROT_READ | libc::PROT_WRITE,
                     libc::MAP_SHARED,
-                    std::os::unix::io::AsRawFd::as_raw_fd(&file),
-                    mmap_offset as libc::off_t,
+                    fd,
+                    0,
                 )
             };
 
             if mmap_ptr == libc::MAP_FAILED {
-                log::warn!(
-                    "FPGA framebuffer mmap failed: {} — using mock for development",
-                    std::io::Error::last_os_error()
-                );
-                return Ok(Self::mock(params.width, params.height));
+                log::warn!("fb0 mmap failed: {} — using mock", std::io::Error::last_os_error());
+                return Ok(Self::mock(resolution.width, resolution.height));
             }
 
             std::mem::forget(file);
 
-            log::info!(
-                "Opened FPGA framebuffer: {}x{} stride={} at 0x{:x}+{}",
-                params.width, params.height, params.stride, FPGA_FB_BASE, FPGA_FB_OFFSET
-            );
+            log::info!("Opened /dev/fb0: {}x{} stride={}", width, height, stride);
 
             Ok(Self {
-                width: params.width,
-                height: params.height,
-                stride: params.stride,
+                width,
+                height,
+                stride,
                 bpp,
-                buffer: vec![0u8; mmap_len],
+                buffer: vec![0u8; (stride * height) as usize],
                 mmap_ptr: mmap_ptr as *mut u8,
                 mmap_len,
             })
@@ -148,7 +169,7 @@ impl Framebuffer {
 
         #[cfg(not(target_os = "linux"))]
         {
-            Err("Framebuffer not available on this platform".to_string())
+            Ok(Self::mock(resolution.width, resolution.height))
         }
     }
 
@@ -277,40 +298,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_sysfs_params_valid() {
-        let params = FbParams::parse_from_strings(
-            Some("1920"), Some("1080"), Some("7680"), Some("6"),
-        );
-        assert_eq!(params.width, 1920);
-        assert_eq!(params.height, 1080);
-        assert_eq!(params.stride, 7680);
-        assert_eq!(params.format, 6);
-    }
-
-    #[test]
-    fn test_parse_sysfs_params_missing_falls_back() {
-        let params = FbParams::parse_from_strings(None, None, None, None);
-        assert_eq!(params.width, 1920);
-        assert_eq!(params.height, 1080);
-        assert_eq!(params.stride, 7680);
-    }
-
-    #[test]
-    fn test_parse_sysfs_params_partial() {
-        let params = FbParams::parse_from_strings(
-            Some("1280"), Some("720"), None, None,
-        );
-        assert_eq!(params.width, 1280);
-        assert_eq!(params.height, 720);
-        assert_eq!(params.stride, 1280 * 4);
-    }
-
-    #[test]
-    fn test_parse_sysfs_params_corrupt_stride() {
-        let params = FbParams::parse_from_strings(
-            Some("1920"), Some("1080"), Some("100"), Some("6"),
-        );
-        assert_eq!(params.stride, 1920 * 4);
+    fn test_open_with_resolution() {
+        let res = grandma_common::config::Resolution { width: 640, height: 480 };
+        let fb = Framebuffer::open(&res).unwrap();
+        assert_eq!(fb.width(), 640);
+        assert_eq!(fb.height(), 480);
     }
 
     #[test]

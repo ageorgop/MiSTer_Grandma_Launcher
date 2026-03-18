@@ -15,7 +15,7 @@ A curated retro game launcher for MiSTer FPGA — turn your MiSTer into a simple
 
 ## How It Works
 
-**Fair warning:** this is a kludge. MiSTer wasn't designed for third-party launchers — there's no plugin API, no framebuffer abstraction, no input sharing protocol. Everything here is a workaround: we write pixels to a raw DDR3 address via `/dev/mem`, fake a keyboard F9 press through a virtual uinput device to trick MiSTer into enabling the display, and send commands through a named FIFO that was meant for internal use. It works, but understanding *why* each piece exists requires understanding which "proper" approach didn't work.
+**How it works:** The launcher uses MiSTer's Linux framebuffer (`/dev/fb0`) for display. First, a synthetic F9 keypress via uinput tells MiSTer to enable the FPGA framebuffer display. Then `vmode` configures the resolution via `/dev/MiSTer_cmd`, and we `mmap` `/dev/fb0` and write pixels directly. Game launching also uses `/dev/MiSTer_cmd` — no FPGA modifications, no custom cores.
 
 ### Boot and Game Launch Flow
 
@@ -65,43 +65,41 @@ A curated retro game launcher for MiSTer FPGA — turn your MiSTer into a simple
 |--------|------|-------------|
 | `grandma-supervisor` | Process manager | Launches splash, then launcher in a loop. Crash backoff: 3 fast failures and it gives up, letting normal MiSTer boot. No rendering, no I/O. |
 | `grandma-splash` | Boot splash | Shows countdown and device IP. Exit code 0 = proceed to launcher, exit code 1 = escape to normal MiSTer menu. |
-| `grandma-launcher` | Game UI | Reads config from disk, renders game grid to FPGA framebuffer via `/dev/mem`, waits for controller input, writes `load_core` to FIFO, exits. |
+| `grandma-launcher` | Game UI | Reads config from disk, renders game grid to Linux framebuffer via `/dev/fb0`, waits for controller input, writes `load_core` to FIFO, exits. |
 | `grandma-admin` | Web config | Optional HTTP server for managing the game list from a browser. Off by default. |
 
 ### Display Architecture
 
 ```
-  ┌──────────────────────────────────────────────────┐
-  │                    FPGA                          │
-  │  ┌──────────────┐     ┌───────────────────┐     │
-  │  │ OSD overlay   │     │  Scaler / Display │     │
-  │  │ (MiSTer menu) │     │                   │     │
-  │  └───────┬───────┘     └─────────▲─────────┘     │
-  │          │ SPI                   │ SPI            │
-  └──────────┼───────────────────────┼────────────────┘
-             │                       │
-  ┌──────────▼───────────────────────┼────────────────┐
-  │                ARM CPU (HPS)                      │
-  │                                                   │
-  │  MiSTer binary ───── /dev/MiSTer_cmd (FIFO)      │
-  │       │                       ▲                   │
-  │       │ SPI commands          │ "fb_cmd0 ..."     │
-  │       │                       │ "load_core ..."   │
-  │       ▼                       │                   │
-  │  DDR3 @ 0x22000000       grandma-launcher         │
-  │  (FPGA framebuffer)       writes pixels here      │
-  │                           via /dev/mem mmap        │
-  └───────────────────────────────────────────────────┘
+  ┌────────────────────────────────────────────────┐
+  │                    FPGA                        │
+  │         ┌───────────────────┐                  │
+  │         │  Scaler / Display │                  │
+  │         └─────────▲─────────┘                  │
+  │                   │ reads from fb              │
+  └───────────────────┼────────────────────────────┘
+                      │
+  ┌───────────────────┼────────────────────────────┐
+  │              ARM CPU (HPS)                     │
+  │                                                │
+  │  F9 via uinput ── tells MiSTer to enable fb    │
+  │  vmode ────────── configures resolution        │
+  │                                                │
+  │  /dev/fb0 ─── mmap'd by grandma-launcher       │
+  │               (standard Linux framebuffer)     │
+  │                                                │
+  │  /dev/MiSTer_cmd ─── "load_core ..." for       │
+  │                      game launching            │
+  └────────────────────────────────────────────────┘
 ```
 
 The display path works like this:
 
-1. The FPGA framebuffer lives at a fixed DDR3 address (`0x22000000 + 4096`), not at `/dev/fb0`
-2. The launcher `mmap`s this address via `/dev/mem` and writes BGRA pixels directly
-3. MiSTer must stay alive — it owns the SPI bus to the FPGA. We tell it to enable the framebuffer display by:
-   - Creating a virtual keyboard via uinput and sending F9 (triggers MiSTer's `video_fb_enable()`)
-   - Writing `fb_cmd0 8888 1 1` to `/dev/MiSTer_cmd` to configure display mode
-4. Game launching is just `load_core /path/to/game.mra\n` written to the same FIFO
+1. A synthetic F9 keypress via uinput triggers MiSTer's `video_fb_enable()`, which sends SPI commands to the FPGA to display the Linux framebuffer
+2. `vmode -r {width} {height} rgb32` configures the resolution (this writes `fb_cmd1` to `/dev/MiSTer_cmd` under the hood)
+3. The launcher opens `/dev/fb0`, queries dimensions via `ioctl`, and `mmap`s it
+4. BGRA pixels are written to a back buffer and copied to the mmap'd region on present
+5. Game launching is `load_core /path/to/game.mra\n` written to `/dev/MiSTer_cmd`
 
 ### Why Not Just...
 
@@ -109,12 +107,10 @@ We tried the obvious approaches first. Here's why they don't work:
 
 | Approach | Why it doesn't work |
 |----------|-------------------|
-| Write to `/dev/fb0` | MiSTer doesn't relay fb0 content to the FPGA display. Pixels go nowhere. |
+| Write to `/dev/fb0` without F9 + `vmode` | By default, MiSTer doesn't display fb0 content. The FPGA must be told to enable the framebuffer (F9 via uinput) and configure resolution (`vmode`). With both steps, `/dev/fb0` works — this is now our approach. |
 | Kill MiSTer, take over the display | The OSD freezes on screen (it's FPGA-rendered, not Linux). The `/dev/MiSTer_cmd` FIFO disappears, so you can't launch games. |
 | Send SPI commands directly | Partially works for display, but OSD management requires full FPGA core state. You still need MiSTer alive for game launching. |
 | Use GroovyMiSTer (like MiSTer_Games_GUI) | Requires loading a custom FPGA core first via the OSD menu. Chicken-and-egg problem. |
-
-So instead, we keep MiSTer alive, write pixels behind its back to raw DDR3, and poke it via FIFO and fake keypresses to cooperate. It's ugly but it works.
 
 ### The Fresh Boot Rule
 
@@ -172,10 +168,12 @@ Verify with `ssh mister` — you should get a root shell on the MiSTer.
 **3. Build and deploy:**
 
 ```bash
-./deploy.sh
+make deploy
 ```
 
 This cross-compiles all four binaries for ARM, copies them to the MiSTer, runs the installer, and starts the supervisor. Takes a few minutes on first build.
+
+Other useful targets: `make check` (fast compile check), `make test` (run tests), `make build` (cross-compile only), `make clean`.
 
 **4. Add some games:**
 
@@ -311,6 +309,7 @@ UI settings. Created with defaults on first install — edit to customize.
 | `boot_delay_seconds` | `3` | Splash screen countdown duration |
 | `admin_server` | `false` | Enable the web config server |
 | `admin_port` | `8080` | Port for the web config server |
+| `resolution` | `{"width": 1920, "height": 1080}` | Display resolution passed to `vmode` |
 
 ### state.json (auto-managed)
 
@@ -377,10 +376,10 @@ See `.cargo/config.toml` for linker configuration.
 ### Running Tests
 
 ```bash
-cargo test
+make test
 ```
 
-Tests run on the host (not ARM). 25 tests cover config parsing, atomic writes, input normalization, and crash backoff.
+Tests run on the host (not ARM). 24 tests cover config parsing, atomic writes, input normalization, and crash backoff.
 
 ## Roadmap to v0.2
 
@@ -397,7 +396,7 @@ Tests run on the host (not ARM). 25 tests cover config parsing, atomic writes, i
 - **Splash screen escape is stdin-only.** It reads from stdin, not evdev — escape detection requires the process to have a TTY.
 - **No EVIOCGRAB.** If MiSTer grabs exclusive access to your controller, the launcher won't see its input.
 - **No controller hotplug.** Input devices are enumerated once at launcher startup.
-- **1080p HDMI only.** The UI layout (tile sizes, margins, fonts) is hardcoded for 1920x1080. The framebuffer adapts to other resolutions, but the grid won't fit on CRT (240p), 720p, vertical/tate monitors, or non-16:9 LCDs.
+- **Default layout is 1080p only.** Resolution is configurable via `resolution` in `settings.json`, but the UI layout (tile sizes, margins, fonts) is hardcoded for 1920x1080. Other resolutions will render but the grid won't fit properly.
 - **Admin web server has no authentication.** Anyone on your local network can access it. Only run it when actively managing games.
 - **Admin web server is minimal.** No art scraping or MGL generation yet.
 
