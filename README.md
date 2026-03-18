@@ -15,7 +15,7 @@ A curated retro game launcher for MiSTer FPGA — turn your MiSTer into a simple
 
 ## How It Works
 
-**How it works:** The launcher uses MiSTer's Linux framebuffer (`/dev/fb0`) for display. The `vmode` utility configures the FPGA scaler to read from the Linux framebuffer at the desired resolution, then we `mmap` `/dev/fb0` and write pixels directly. Game launching uses MiSTer's `/dev/MiSTer_cmd` FIFO — no FPGA modifications, no custom cores.
+**How it works:** The launcher uses MiSTer's Linux framebuffer (`/dev/fb0`) for display. First, a synthetic F9 keypress via uinput tells MiSTer to enable the FPGA framebuffer display. Then `vmode` configures the resolution via `/dev/MiSTer_cmd`, and we `mmap` `/dev/fb0` and write pixels directly. Game launching also uses `/dev/MiSTer_cmd` — no FPGA modifications, no custom cores.
 
 ### Boot and Game Launch Flow
 
@@ -82,7 +82,8 @@ A curated retro game launcher for MiSTer FPGA — turn your MiSTer into a simple
   ┌───────────────────┼────────────────────────────┐
   │              ARM CPU (HPS)                     │
   │                                                │
-  │  vmode ─── configures FPGA scaler resolution   │
+  │  F9 via uinput ── tells MiSTer to enable fb    │
+  │  vmode ────────── configures resolution        │
   │                                                │
   │  /dev/fb0 ─── mmap'd by grandma-launcher       │
   │               (standard Linux framebuffer)     │
@@ -94,10 +95,11 @@ A curated retro game launcher for MiSTer FPGA — turn your MiSTer into a simple
 
 The display path works like this:
 
-1. At startup, the launcher runs `vmode -r {width} {height} rgb32` to configure the FPGA scaler
-2. It opens `/dev/fb0` (standard Linux framebuffer), queries dimensions via `ioctl`, and `mmap`s it
-3. BGRA pixels are written to a back buffer and copied to the mmap'd region on present
-4. Game launching is `load_core /path/to/game.mra\n` written to `/dev/MiSTer_cmd`
+1. A synthetic F9 keypress via uinput triggers MiSTer's `video_fb_enable()`, which sends SPI commands to the FPGA to display the Linux framebuffer
+2. `vmode -r {width} {height} rgb32` configures the resolution (this writes `fb_cmd1` to `/dev/MiSTer_cmd` under the hood)
+3. The launcher opens `/dev/fb0`, queries dimensions via `ioctl`, and `mmap`s it
+4. BGRA pixels are written to a back buffer and copied to the mmap'd region on present
+5. Game launching is `load_core /path/to/game.mra\n` written to `/dev/MiSTer_cmd`
 
 ### Why Not Just...
 
@@ -105,7 +107,7 @@ We tried the obvious approaches first. Here's why they don't work:
 
 | Approach | Why it doesn't work |
 |----------|-------------------|
-| Write to `/dev/fb0` without `vmode` | By default, MiSTer doesn't relay fb0 content to the FPGA display. Running `vmode` first configures the scaler — this is now our approach. |
+| Write to `/dev/fb0` without F9 + `vmode` | By default, MiSTer doesn't display fb0 content. The FPGA must be told to enable the framebuffer (F9 via uinput) and configure resolution (`vmode`). With both steps, `/dev/fb0` works — this is now our approach. |
 | Kill MiSTer, take over the display | The OSD freezes on screen (it's FPGA-rendered, not Linux). The `/dev/MiSTer_cmd` FIFO disappears, so you can't launch games. |
 | Send SPI commands directly | Partially works for display, but OSD management requires full FPGA core state. You still need MiSTer alive for game launching. |
 | Use GroovyMiSTer (like MiSTer_Games_GUI) | Requires loading a custom FPGA core first via the OSD menu. Chicken-and-egg problem. |
@@ -166,10 +168,12 @@ Verify with `ssh mister` — you should get a root shell on the MiSTer.
 **3. Build and deploy:**
 
 ```bash
-./deploy.sh
+make deploy
 ```
 
 This cross-compiles all four binaries for ARM, copies them to the MiSTer, runs the installer, and starts the supervisor. Takes a few minutes on first build.
+
+Other useful targets: `make check` (fast compile check), `make test` (run tests), `make build` (cross-compile only), `make clean`.
 
 **4. Add some games:**
 
@@ -372,10 +376,10 @@ See `.cargo/config.toml` for linker configuration.
 ### Running Tests
 
 ```bash
-cargo test
+make test
 ```
 
-Tests run on the host (not ARM). 25 tests cover config parsing, atomic writes, input normalization, and crash backoff.
+Tests run on the host (not ARM). 24 tests cover config parsing, atomic writes, input normalization, and crash backoff.
 
 ## Roadmap to v0.2
 
