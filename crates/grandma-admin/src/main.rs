@@ -120,6 +120,196 @@ fn handle_request(
             }
         }
 
+        (Method::Post, path) if path.starts_with("/api/art/") => {
+            let game_id = &path["/api/art/".len()..];
+
+            // Validate game_id: non-empty, lowercase alphanumeric only
+            if game_id.is_empty() || game_id.len() > 64 || !game_id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                request.respond(
+                    Response::from_string(r#"{"error":"Invalid game_id: must be non-empty lowercase alphanumeric"}"#)
+                        .with_status_code(400)
+                        .with_header(header)
+                ).ok();
+                return;
+            }
+
+            // Reject body over 2MB (when Content-Length is known).
+            // For chunked requests, body_length() returns None and the
+            // .take(MAX_ART_SIZE) on the reader provides a hard cap.
+            const MAX_ART_SIZE: u64 = 2 * 1024 * 1024;
+            if let Some(len) = request.body_length() {
+                if len > MAX_ART_SIZE as usize {
+                    let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                    request.respond(
+                        Response::from_string(r#"{"error":"Request body too large"}"#)
+                            .with_status_code(413)
+                            .with_header(header)
+                    ).ok();
+                    return;
+                }
+            }
+
+            // Read body bytes
+            let mut body = Vec::new();
+            if let Err(e) = request.as_reader().take(MAX_ART_SIZE).read_to_end(&mut body) {
+                error!("Failed to read art upload body: {}", e);
+                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                request.respond(
+                    Response::from_string(r#"{"error":"Failed to read request body"}"#)
+                        .with_status_code(500)
+                        .with_header(header)
+                ).ok();
+                return;
+            }
+
+            // Reject empty body (after read)
+            if body.is_empty() {
+                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                request.respond(
+                    Response::from_string(r#"{"error":"Empty body"}"#)
+                        .with_status_code(400)
+                        .with_header(header)
+                ).ok();
+                return;
+            }
+
+            // Validate PNG magic bytes
+            const PNG_MAGIC: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+            if body.len() < 8 || body[..8] != PNG_MAGIC {
+                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                request.respond(
+                    Response::from_string(r#"{"error":"Invalid PNG file"}"#)
+                        .with_status_code(400)
+                        .with_header(header)
+                ).ok();
+                return;
+            }
+
+            // Create boxart directory if needed
+            let boxart_dir = paths.boxart_dir();
+            if let Err(e) = std::fs::create_dir_all(&boxart_dir) {
+                error!("Failed to create boxart directory: {}", e);
+                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                request.respond(
+                    Response::from_string(r#"{"error":"Failed to create boxart directory"}"#)
+                        .with_status_code(500)
+                        .with_header(header)
+                ).ok();
+                return;
+            }
+
+            // Save using atomic write
+            let art_path = boxart_dir.join(format!("{}.png", game_id));
+            match grandma_common::atomic::atomic_write(&art_path, &body) {
+                Ok(_) => {
+                    info!("Saved art for game '{}'", game_id);
+                    let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                    request.respond(
+                        Response::from_string(r#"{"ok":true}"#).with_header(header)
+                    ).ok();
+                }
+                Err(e) => {
+                    error!("Failed to save art for '{}': {}", game_id, e);
+                    let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                    request.respond(
+                        Response::from_string(r#"{"error":"Failed to save art"}"#)
+                            .with_status_code(500)
+                            .with_header(header)
+                    ).ok();
+                }
+            }
+        }
+
+        (Method::Get, path) if path.starts_with("/api/art-exists/") => {
+            let game_id = &path["/api/art-exists/".len()..];
+            let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+
+            // Validate game_id: non-empty, max 64 chars, lowercase alphanumeric only
+            let valid = !game_id.is_empty()
+                && game_id.len() <= 64
+                && game_id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+
+            if !valid {
+                request.respond(
+                    Response::from_string(r#"{"exists":false}"#).with_header(header)
+                ).ok();
+                return;
+            }
+
+            let exists = paths.boxart_dir().join(format!("{}.png", game_id)).exists();
+            let json = format!(r#"{{"exists":{}}}"#, exists);
+            request.respond(Response::from_string(json).with_header(header)).ok();
+        }
+
+        (Method::Get, path) if path.starts_with("/api/art/") => {
+            let game_id_raw = &path["/api/art/".len()..];
+            let game_id = game_id_raw.split('?').next().unwrap_or("");
+            let valid = !game_id.is_empty()
+                && game_id.len() <= 64
+                && game_id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+
+            if !valid {
+                request.respond(Response::from_string("Not found").with_status_code(404)).ok();
+                return;
+            }
+
+            let art_path = paths.boxart_dir().join(format!("{}.png", game_id));
+            match std::fs::read(&art_path) {
+                Ok(data) => {
+                    let ct = Header::from_bytes("Content-Type", "image/png").unwrap();
+                    let cc = Header::from_bytes("Cache-Control", "max-age=1").unwrap();
+                    request.respond(
+                        Response::from_data(data).with_header(ct).with_header(cc)
+                    ).ok();
+                }
+                Err(_) => {
+                    request.respond(Response::from_string("Not found").with_status_code(404)).ok();
+                }
+            }
+        }
+
+        (Method::Get, path) if path.starts_with("/api/art-proxy/") => {
+            let remote_path = &path["/api/art-proxy/".len()..];
+            // Only allow proxying to the known thumbnails path, reject traversal
+            if !remote_path.starts_with("MAME/") || remote_path.contains("..") {
+                request.respond(
+                    Response::from_string("Forbidden").with_status_code(403)
+                ).ok();
+                return;
+            }
+            let remote_url = format!("https://thumbnails.libretro.com/{}", remote_path);
+            // Shell out to curl for HTTPS, avoiding a TLS library dependency.
+            // -k skips cert verification because MiSTer's rootfs lacks a CA bundle.
+            match std::process::Command::new("curl")
+                .args(["-sSfLk", "--max-time", "30", "--max-filesize", "10485760", &remote_url])
+                .output()
+            {
+                Ok(output) if output.status.success() => {
+                    let content_type = if remote_path.ends_with(".png") {
+                        "image/png"
+                    } else {
+                        "text/html; charset=utf-8"
+                    };
+                    let header = Header::from_bytes("Content-Type", content_type).unwrap();
+                    request.respond(
+                        Response::from_data(output.stdout).with_header(header)
+                    ).ok();
+                }
+                Ok(_) => {
+                    request.respond(
+                        Response::from_string("Not found").with_status_code(404)
+                    ).ok();
+                }
+                Err(e) => {
+                    error!("Art proxy error (curl): {}", e);
+                    request.respond(
+                        Response::from_string("Proxy error").with_status_code(502)
+                    ).ok();
+                }
+            }
+        }
+
         _ => {
             request.respond(Response::from_string("404").with_status_code(404)).ok();
         }

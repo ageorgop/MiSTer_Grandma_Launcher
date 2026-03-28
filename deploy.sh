@@ -46,9 +46,9 @@ tar czf "${TARBALL}" -C "${STAGING_DIR}" grandma-launcher
 
 # Step 4: Copy tarball and run install
 echo "Deploying to ${HOST}..."
-ssh "${HOST}" "killall grandma-supervisor grandma-launcher grandma-splash 2>/dev/null || true"
+ssh "${HOST}" "killall grandma-supervisor grandma-launcher grandma-splash grandma-admin 2>/dev/null || true"
 scp -q "${TARBALL}" "${HOST}:/tmp/grandma-launcher.tar.gz"
-ssh "${HOST}" 'cd /tmp && tar xzf grandma-launcher.tar.gz && cd grandma-launcher && chmod +x *.sh && ./install.sh && rm -rf /tmp/grandma-launcher /tmp/grandma-launcher.tar.gz && setsid /media/fat/grandma_launcher/bin/grandma-supervisor /media/fat/grandma_launcher </dev/null >/dev/null 2>&1 & disown'
+ssh "${HOST}" 'cd /tmp && tar xzf grandma-launcher.tar.gz && cd grandma-launcher && chmod +x *.sh && ./install.sh && rm -rf /tmp/grandma-launcher /tmp/grandma-launcher.tar.gz && nohup setsid /media/fat/grandma_launcher/bin/grandma-supervisor /media/fat/grandma_launcher </dev/null >/dev/null 2>&1 &'
 echo ""
 
 echo "=== Deploy complete ==="
